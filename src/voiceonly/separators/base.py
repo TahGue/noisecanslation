@@ -31,6 +31,11 @@ class ModelInfo:
     live_window_seconds: float | None = None
     license: str = "unknown"
     requires: list[str] = field(default_factory=list)
+    # Stems separate_stems() returns, in order; "voice" first. The default split is
+    # the voice estimate and the rest of the mix.
+    stems: list[str] = field(default_factory=lambda: ["voice", "background"])
+    # Smallest live step this model can sustain on an RTX 4090.
+    live_min_hop_seconds: float = 0.02
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -56,6 +61,11 @@ class SpeechSeparator(ABC):
         Input and output are float32 (frames, info.channels) at info.sample_rate,
         with the same number of frames.
         """
+
+    def separate_stems(self, chunk: np.ndarray) -> np.ndarray:
+        """All stems for one chunk, shaped (len(info.stems), frames, channels)."""
+        voice = np.asarray(self.separate(chunk), dtype=np.float32)
+        return np.stack([voice, chunk - voice])
 
     def close(self) -> None:
         """Release GPU memory."""

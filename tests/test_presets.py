@@ -23,7 +23,7 @@ def test_presets_get_faster_in_order():
 
 
 def _args(**kw):
-    base = dict(preset="clean", hop=None, lookahead=None, window=None, crossfade=None,
+    base = dict(model="htdemucs", preset="clean", hop=None, lookahead=None, window=None, crossfade=None,
                 jitter=None)
     return argparse.Namespace(**{**base, **kw})
 
@@ -54,3 +54,25 @@ def test_app_config_ignores_stale_timing_and_bad_presets(tmp_path, monkeypatch):
     cfg = app.load_config()
     assert cfg["listen"] == "X" and "hop" not in cfg
     assert cfg["preset"] == app.DEFAULT_PRESET  # "custom" without values falls back
+
+
+def test_model_specific_presets_are_valid():
+    from voiceonly.live import MODEL_PRESETS
+    from voiceonly.separators.base import ModelInfo, SpeechSeparator
+
+    class Fake(SpeechSeparator):
+        info = ModelInfo(key="fake", name="f", version="1", sample_rate=44100, channels=2,
+                         chunk_seconds=1, overlap_seconds=0, live_window_seconds=1.5)
+
+        def separate(self, chunk):
+            return chunk
+
+    for presets in MODEL_PRESETS.values():
+        for p in presets.values():
+            proc = StreamingProcessor(Fake(), p.config())
+            assert proc.window >= proc.hop + proc.look + proc.fade
+
+
+def test_cli_rejects_preset_missing_for_model():
+    with pytest.raises(RuntimeError):
+        cli._preset(_args(model="bs-roformer-live", preset="ultra"))

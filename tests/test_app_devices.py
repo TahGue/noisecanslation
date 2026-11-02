@@ -20,7 +20,7 @@ def make_app(monkeypatch, tmp_path):
                         lambda: Speaker(state["default"], state["default"]))
     monkeypatch.setattr(appmod.winaudio, "set_default_speaker",
                         lambda i: state["set"].append(i))
-    monkeypatch.setattr(appmod.App, "_load_model", lambda self: None)
+    monkeypatch.setattr(appmod.App, "_load_model", lambda self, key: None)
     monkeypatch.setattr(appmod.App, "_hotkey_loop", lambda self: None)
     created = []
 
@@ -63,9 +63,9 @@ def test_fallback_never_picks_the_capture_device(make_app):
     assert a.listen_var.get() == WIRED
 
 
-def test_voice_mode_drops_to_normal_when_headphones_vanish(make_app, monkeypatch):
+def test_filter_mode_drops_to_normal_when_headphones_vanish(make_app, monkeypatch):
     a, state = make_app()
-    a.mode = "voice"
+    a.mode = "filter"
     modes = []
     monkeypatch.setattr(a, "set_mode", lambda m: (modes.append(m), setattr(a, "mode", m)))
     state["speakers"] = [WIRED, SINK]
@@ -81,3 +81,35 @@ def test_preferred_headphones_are_picked_again_when_back(make_app):
     state["speakers"] = [HEADPHONES, WIRED, SINK]
     a._check_devices()
     assert a.listen_var.get() == HEADPHONES
+
+
+def test_mix_modes_follow_the_model(make_app):
+    a, _ = make_app()
+    a.cfg["model"] = "htdemucs"
+    a._refresh_keep()
+    assert str(a.mix_buttons["no_music"].cget("state")) == "disabled"
+    assert set(a.mixer_vars) == {"voice", "drums", "bass", "other"}
+    a.cfg["model"] = "mrx"
+    a._refresh_keep()
+    assert str(a.mix_buttons["no_music"].cget("state")) == "normal"
+    assert set(a.mixer_vars) == {"voice", "music", "effects"}
+
+
+def test_custom_mixer_levels_are_kept_per_model(make_app):
+    a, _ = make_app()
+    a.cfg["model"] = "mrx"
+    a._refresh_keep()
+    a.mixer_vars["effects"].set(40)
+    a._mixer_changed()
+    assert a.cfg["mix"] == "custom"
+    assert a._gains() == {"voice": 1.0, "music": 0.0, "effects": 0.4}
+    assert a.btn_filter.cget("text") == "Custom mix"
+
+
+def test_switching_model_resets_modes_it_cannot_do(make_app, monkeypatch):
+    a, _ = make_app()
+    loaded = []
+    monkeypatch.setattr(a, "_load_model", loaded.append)
+    a.cfg["model"], a.cfg["mix"] = "mrx", "no_music"
+    a.set_model("htdemucs")
+    assert loaded == ["htdemucs"] and a.cfg["mix"] == "voice"

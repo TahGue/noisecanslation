@@ -11,13 +11,15 @@ from .models import (
     DeepFilterNet,
     HTDemucs,
     HTDemucsFT,
+    MRXCinematic,
     Passthrough,
+    RoFormerDirect,
 )
 
 REGISTRY: dict[str, type[SpeechSeparator]] = {
     cls.info.key: cls
     for cls in (Passthrough, HTDemucs, HTDemucsFT, AudioSeparatorModel, *AUDIOSEP_MODELS,
-                DeepFilterNet)
+                RoFormerDirect, MRXCinematic, DeepFilterNet)
 }
 
 _IMPORT_NAMES = {"demucs": "demucs", "deepfilternet": "df", "audio-separator": "audio_separator"}

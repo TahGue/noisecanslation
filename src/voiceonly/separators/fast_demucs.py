@@ -98,11 +98,15 @@ def apply_patches() -> None:
 
 
 class GraphRunner:
-    """Runs one HTDemucs model on a fixed number of frames by replaying a CUDA graph."""
+    """Runs one HTDemucs model on a fixed number of frames by replaying a CUDA graph.
 
-    def __init__(self, model, frames: int, stem: int, half: bool) -> None:
+    Calling it returns every source, shaped (n_sources, frames, channels), in the
+    model's own order (model.sources).
+    """
+
+    def __init__(self, model, frames: int, half: bool) -> None:
         apply_patches()
-        self.model, self.frames, self.stem, self.half = model, frames, stem, half
+        self.model, self.frames, self.half = model, frames, half
         training = int(model.segment * model.samplerate)
         # Shorter windows than training: run at the true length instead of padding to it.
         model.use_train_segment = frames >= training
@@ -127,7 +131,7 @@ class GraphRunner:
 
     def _forward(self) -> torch.Tensor:
         with torch.autocast("cuda", dtype=torch.float16, enabled=self.half):
-            return self.model(self.static_in)[0, self.stem]
+            return self.model(self.static_in)[0]
 
     def __call__(self, chunk: np.ndarray) -> np.ndarray:
         with torch.inference_mode():
@@ -137,4 +141,4 @@ class GraphRunner:
                 out = self.static_out
             else:
                 out = self._forward()
-            return out.float().cpu().numpy().T
+            return out.float().cpu().numpy().transpose(0, 2, 1)

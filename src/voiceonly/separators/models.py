@@ -55,7 +55,10 @@ class HTDemucs(_TorchSeparator):
         # 4 s scored as well as the full 7.8 s training window on the live test clip
         # and runs ~2x faster (20 ms per step in fp16 on an RTX 4090).
         license="MIT", requires=["demucs"], live_window_seconds=4.0,
+        stems=["voice", "drums", "bass", "other"],
     )
+    # HTDemucs source name for each of our stems.
+    SOURCE_FOR_STEM = {"voice": "vocals", "drums": "drums", "bass": "bass", "other": "other"}
 
     def __init__(self, device: str = "auto", half: bool = True) -> None:
         super().__init__(device)
@@ -70,6 +73,7 @@ class HTDemucs(_TorchSeparator):
         if "vocals" not in self.model.sources:
             raise SeparationError(f"model has no vocals stem: {self.model.sources}")
         self.stem = self.model.sources.index("vocals")
+        self.order = [self.model.sources.index(self.SOURCE_FOR_STEM[s]) for s in self.info.stems]
         # get_model() always returns a bag; a bag of one can run its model directly.
         models = getattr(self.model, "models", [self.model])
         self.single = models[0] if len(models) == 1 else None
@@ -87,7 +91,7 @@ class HTDemucs(_TorchSeparator):
 
             # Own copy: the runner changes padding behaviour, which offline runs must not see.
             model = copy.deepcopy(self.single)
-            self.runners[frames] = GraphRunner(model, frames, self.stem, self.half)
+            self.runners[frames] = GraphRunner(model, frames, self.half)
         return self.runners[frames]
 
     def runtime_info(self) -> dict:
@@ -102,6 +106,13 @@ class HTDemucs(_TorchSeparator):
         super().close()
 
     def separate(self, chunk: np.ndarray) -> np.ndarray:
+        return self._sources(chunk)[self.stem]
+
+    def separate_stems(self, chunk: np.ndarray) -> np.ndarray:
+        return self._sources(chunk)[self.order]
+
+    def _sources(self, chunk: np.ndarray) -> np.ndarray:
+        """All model sources, (n_sources, frames, channels), in model.sources order."""
         from demucs.apply import apply_model
 
         if (self.single is not None and self.device.startswith("cuda")
@@ -117,7 +128,7 @@ class HTDemucs(_TorchSeparator):
             else:
                 out = apply_model(self.model, x, device=self.device, split=True,
                                   overlap=0.25, progress=False)
-        return out[0, self.stem].cpu().numpy().T
+        return out[0].cpu().numpy().transpose(0, 2, 1)
 
 
 class HTDemucsFT(HTDemucs):
@@ -126,7 +137,7 @@ class HTDemucsFT(HTDemucs):
     info = ModelInfo(
         key="htdemucs_ft", name="HTDemucs fine-tuned (vocals)", version="htdemucs_ft",
         sample_rate=44100, channels=2, chunk_seconds=60.0, overlap_seconds=2.0,
-        license="MIT", requires=["demucs"],
+        license="MIT", requires=["demucs"], stems=["voice", "drums", "bass", "other"],
     )
 
 
@@ -204,7 +215,9 @@ class AudioSeparatorModel(SpeechSeparator):
         sf.write(src, chunk, self.info.sample_rate, subtype="FLOAT")
         outputs = [tmp / Path(p).name for p in self.sep.separate(str(src))]
         try:
-            vocal = next(p for p in outputs if "vocal" in p.name.lower())
+            # Outputs are "<input>_(<Stem>)_<model>.wav". Match the stem in brackets:
+            # checkpoint names such as Kim_Vocal_2 contain "vocal" in every file name.
+            vocal = next(p for p in outputs if "(vocals)" in p.name.lower())
         except StopIteration:
             raise SeparationError(f"no vocals stem among {[p.name for p in outputs]}") from None
         y, sr = sf.read(vocal, dtype="float32", always_2d=True)
@@ -218,6 +231,168 @@ class AudioSeparatorModel(SpeechSeparator):
 
     def close(self) -> None:
         self.tmp.cleanup()
+
+
+class RoFormerDirect(_TorchSeparator):
+    """BS-RoFormer run in-process on the GPU (fp16), without audio-separator's file API.
+
+    Uses audio-separator's model class and its downloaded checkpoint + YAML config.
+    Much heavier than HTDemucs (160 M parameters): live it needs a short window
+    and a larger step.
+    """
+
+    CHECKPOINT = "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
+
+    info = ModelInfo(
+        key="bs-roformer-live", name="BS-RoFormer (in-process, fp16)", version=CHECKPOINT,
+        sample_rate=44100, channels=2, chunk_seconds=8.0, overlap_seconds=1.0,
+        license="per-checkpoint, verify", requires=["audio-separator"],
+        live_window_seconds=1.5, live_min_hop_seconds=0.15,
+    )
+
+    def __init__(self, device: str = "auto", half: bool = True) -> None:
+        super().__init__(device)
+        self.half = half
+
+    def initialize(self) -> None:
+        import os
+
+        import yaml
+        from audio_separator.separator.uvr_lib_v5.roformer.bs_roformer import BSRoformer
+
+        super().initialize()
+        cache = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "VoiceOnly" / "models"
+        ckpt = cache / self.info.version
+        cfg_path = ckpt.with_suffix(".yaml")
+        if not ckpt.exists() or not cfg_path.exists():
+            # Let audio-separator fetch the checkpoint and config into the shared cache.
+            fetch = AudioSeparatorModel(checkpoint=self.info.version)
+            fetch.initialize()
+            fetch.close()
+        # The YAML stores band sizes as Python tuples, which safe_load rejects.
+        loader = type("TupleLoader", (yaml.SafeLoader,), {})
+        loader.add_constructor("tag:yaml.org,2002:python/tuple",
+                               lambda ld, node: tuple(ld.construct_sequence(node)))
+        cfg = yaml.load(cfg_path.read_text(encoding="utf-8"), Loader=loader)
+        model = BSRoformer(**cfg["model"])
+        model.load_state_dict(self.torch.load(ckpt, map_location="cpu", weights_only=True))
+        self.model = model.to(self.device).eval()
+        self.torch.backends.cuda.matmul.allow_tf32 = True
+
+    LIVE_MAX_SECONDS = 4.0  # chunks up to this length use the CUDA-graph runner
+
+    def _runner(self, frames: int):
+        if not hasattr(self, "runners"):
+            self.runners = {}
+        if frames not in self.runners:
+            from .fast_roformer import RoFormerGraphRunner
+
+            self.runners[frames] = RoFormerGraphRunner(self.model, frames, self.half)
+        return self.runners[frames]
+
+    def runtime_info(self) -> dict:
+        info = super().runtime_info()
+        runners = getattr(self, "runners", {})
+        if runners:
+            info["live_cuda_graph"] = all(r.graph is not None for r in runners.values())
+        return info
+
+    def close(self) -> None:
+        self.runners = {}
+        super().close()
+
+    def separate(self, chunk: np.ndarray) -> np.ndarray:
+        torch = self.torch
+        if (self.device.startswith("cuda")
+                and chunk.shape[0] <= self.LIVE_MAX_SECONDS * self.info.sample_rate):
+            return self._runner(chunk.shape[0])(chunk)  # live path
+        x = torch.from_numpy(np.ascontiguousarray(chunk.T))[None].to(self.device)
+        with torch.inference_mode(), torch.autocast(
+                "cuda", dtype=torch.float16, enabled=self.half and self.device.startswith("cuda")):
+            y = self.model(x)[0].float()
+        n = chunk.shape[0]
+        if y.shape[-1] < n:
+            y = torch.nn.functional.pad(y, (0, n - y.shape[-1]))
+        return y[:, :n].cpu().numpy().T
+
+
+class MRXCinematic(_TorchSeparator):
+    """MRX three-stem soundtrack separation (speech / music / effects), MERL cocktail-fork.
+
+    Trained on Divide-and-Remaster, so it separates sound effects from music, which
+    music-trained models cannot. Code vendored under separators/vendor (MIT).
+    """
+
+    WEIGHTS = "default_mrx_pre_trained_weights.pth"
+    URL = ("https://media.githubusercontent.com/media/merlresearch/cocktail-fork-separation/"
+           "main/checkpoints/" + WEIGHTS)
+    TARGET_LUFS = -27.0  # level the model was trained at (DnR average)
+
+    info = ModelInfo(
+        key="mrx", name="MRX cinematic (voice / music / effects)", version=WEIGHTS,
+        sample_rate=44100, channels=2, chunk_seconds=30.0, overlap_seconds=1.0,
+        license="MIT (MERL cocktail-fork)", requires=[], live_window_seconds=3.0,
+        live_min_hop_seconds=0.05, stems=["voice", "music", "effects"],
+    )
+    ORDER = [1, 0, 2]  # model output is music, speech, sfx
+
+    def initialize(self) -> None:
+        import os
+        import urllib.request
+
+        from .vendor.mrx import MRX
+
+        super().initialize()
+        path = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "VoiceOnly" / "models" / "mrx"
+        weights = path / self.WEIGHTS
+        if not weights.exists():
+            path.mkdir(parents=True, exist_ok=True)
+            urllib.request.urlretrieve(self.URL, weights.with_suffix(".part"))
+            weights.with_suffix(".part").rename(weights)
+        model = MRX()
+        model.load_state_dict(self.torch.load(weights, map_location="cpu", weights_only=True))
+        self.model = model.to(self.device).eval()
+        self.torch.backends.cudnn.benchmark = True
+
+    def _gain(self, chunk: np.ndarray) -> float:
+        """Input gain to the training loudness (RMS approximation of LUFS)."""
+        rms = float(np.sqrt(np.mean(chunk ** 2)))
+        level = 20 * np.log10(max(rms, 1e-6)) - 0.7
+        return float(10 ** (np.clip(self.TARGET_LUFS - level, -20, 30) / 20))
+
+    def separate(self, chunk: np.ndarray) -> np.ndarray:
+        return self.separate_stems(chunk)[0]
+
+    LIVE_MAX_SECONDS = 6.0  # chunks up to this length use the CUDA-graph runner
+
+    def __init__(self, device: str = "auto", half: bool = True) -> None:
+        super().__init__(device)
+        self.half = half
+        self.runners: dict[int, object] = {}
+
+    def _runner(self, frames: int):
+        if frames not in self.runners:
+            from .fast_mrx import MRXGraphRunner
+
+            self.runners[frames] = MRXGraphRunner(self.model, frames, self.info.channels,
+                                                  self.half)
+        return self.runners[frames]
+
+    def close(self) -> None:
+        self.runners = {}
+        super().close()
+
+    def separate_stems(self, chunk: np.ndarray) -> np.ndarray:
+        torch = self.torch
+        g = self._gain(chunk)
+        if (self.device.startswith("cuda")
+                and chunk.shape[0] <= self.LIVE_MAX_SECONDS * self.info.sample_rate):
+            y = self._runner(chunk.shape[0])(chunk * g)  # (3, frames, channels)
+            return y[self.ORDER] / g
+        x = torch.from_numpy(np.ascontiguousarray(chunk.T) * g).to(self.device)
+        with torch.inference_mode():
+            y = self.model(x)  # (3, channels, frames)
+        return (y[self.ORDER].float().cpu().numpy() / g).transpose(0, 2, 1)
 
 
 def _audiosep(key: str, name: str, checkpoint: str) -> type[AudioSeparatorModel]:

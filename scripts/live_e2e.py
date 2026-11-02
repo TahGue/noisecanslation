@@ -96,8 +96,8 @@ def main() -> int:
 
     f, pg = welch(seg, sr, nperseg=4096)
     _, pr = welch(ref, sr, nperseg=4096)
-    bands = {f"{lo}-{hi}": round(10 * np.log10(pg[(f >= lo) & (f < hi)].sum()
-                                               / pr[(f >= lo) & (f < hi)].sum()) - args.gain_db, 1)
+    bands = {f"{lo}-{hi}": round(float(10 * np.log10(pg[(f >= lo) & (f < hi)].sum()
+                                               / pr[(f >= lo) & (f < hi)].sum())) - args.gain_db, 1)
              for lo, hi in [(0, 1000), (1000, 4000), (4000, 8000), (8000, 16000)]}
 
     es, eo = frame_energy(speech.mean(1)[:len(seg)]), frame_energy(seg)
@@ -108,7 +108,7 @@ def main() -> int:
         "underruns": stats.get("underruns"), "dropped": stats.get("dropped"),
         "drift_drops": stats.get("drift drops"),
         "band_balance_db": bands,
-        "pause_background_db": round(10 * np.log10(eo[pause].mean() / eo[talk].mean()), 1),
+        "pause_background_db": round(float(10 * np.log10(eo[pause].mean() / eo[talk].mean())), 1),
     }
     print(json.dumps(result))
     if args.json:

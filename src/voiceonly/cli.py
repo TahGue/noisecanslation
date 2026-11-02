@@ -53,9 +53,9 @@ def cmd_bench(args) -> int:
 
 def _live_config(args):
     """The chosen preset, with any explicitly given timing flag overriding it."""
-    from .live import PRESETS, LiveConfig
+    from .live import LiveConfig
 
-    p = PRESETS[args.preset]
+    p = _preset(args)
     pick = lambda flag, default: default if flag is None else flag  # noqa: E731
     return LiveConfig(hop_s=pick(args.hop, p.hop_s),
                       lookahead_s=pick(args.lookahead, p.lookahead_s),
@@ -63,10 +63,18 @@ def _live_config(args):
                       crossfade_s=pick(args.crossfade, p.crossfade_s))
 
 
-def _jitter(args) -> float:
-    from .live import PRESETS
+def _preset(args):
+    from .live import presets_for
 
-    return PRESETS[args.preset].jitter_s if args.jitter is None else args.jitter
+    presets = presets_for(args.model)
+    if args.preset not in presets:
+        raise RuntimeError(f"preset '{args.preset}' is not available for {args.model}; "
+                           f"choose from {', '.join(presets)}")
+    return presets[args.preset]
+
+
+def _jitter(args) -> float:
+    return _preset(args).jitter_s if args.jitter is None else args.jitter
 
 
 def cmd_devices(args) -> int:
@@ -113,7 +121,13 @@ def cmd_live(args) -> int:
             f"playback device is '{out_name}', which would feed VoiceOnly back into itself. "
             "Pass your speakers/headphones with -o (see: voiceonly devices).")
     sep = separators.create(args.model, device=args.device)
-    engine = LiveEngine(sep, _live_config(args), in_dev, out_dev, jitter_s=_jitter(args))
+    from .mixer import available, gains_for
+
+    if not available(args.mode, sep.info.stems):
+        raise RuntimeError(f"mode '{args.mode}' needs separate music and effects stems; "
+                           f"{args.model} has {', '.join(sep.info.stems)}")
+    engine = LiveEngine(sep, _live_config(args), in_dev, out_dev, jitter_s=_jitter(args),
+                        gains=gains_for(args.mode, sep.info.stems))
     print(f"Loading {sep.info.name}...", file=sys.stderr)
     sep.initialize()
     print(f"Live: {args.input_file or args.input or 'default input'} -> {args.output or 'default output'}, "
@@ -229,11 +243,16 @@ def main(argv: list[str] | None = None) -> int:
     dv.set_defaults(fn=cmd_devices)
 
     def live_args(sp) -> None:
-        from .live import DEFAULT_PRESET, PRESETS
+        from .live import DEFAULT_PRESET, PRESETS, MODEL_PRESETS
+        from .mixer import DEFAULT_MODE, MODES
+
+        names = sorted({*PRESETS, *(k for p in MODEL_PRESETS.values() for k in p)})
 
         sp.add_argument("-m", "--model", default="htdemucs")
         sp.add_argument("--device", default="auto")
-        sp.add_argument("--preset", choices=list(PRESETS), default=DEFAULT_PRESET,
+        sp.add_argument("--mode", choices=list(MODES), default=DEFAULT_MODE,
+                        help="what to keep: voice, boost, no_music, no_effects, karaoke")
+        sp.add_argument("--preset", choices=names, default=DEFAULT_PRESET,
                         help="latency/quality trade-off; the flags below override it")
         sp.add_argument("--hop", type=float, default=None, help="seconds processed per step")
         sp.add_argument("--lookahead", type=float, default=None, help="future audio the model hears")

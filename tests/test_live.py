@@ -67,3 +67,25 @@ def test_engine_queues_without_devices():
     assert eng.stats.steps == 5
     eng._on_output(out, 50, None, None)
     assert eng.stats.underruns == 0
+
+
+def test_engine_downmixes_for_a_mono_output_device():
+    import threading
+    import time
+
+    eng = LiveEngine(create("passthrough"), LiveConfig(hop_s=0.05, lookahead_s=0.05,
+                                                       crossfade_s=0.0), jitter_s=0.01)
+    eng.out_channels = 1  # what run() picks for a hands-free Bluetooth headset
+    eng.running = True
+    t = threading.Thread(target=eng._worker, daemon=True)
+    t.start()
+    for _ in range(20):
+        eng._on_input(np.full((480, 2), 0.5, np.float32), 480, None, None)
+    deadline = time.time() + 2
+    while eng.stats.steps < 3 and time.time() < deadline:
+        time.sleep(0.01)
+    eng.running = False
+    t.join()
+    out = np.zeros((480, 1), np.float32)
+    eng._on_output(out, 480, None, None)
+    assert eng.stats.underruns == 0

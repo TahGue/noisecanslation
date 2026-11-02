@@ -14,6 +14,7 @@ hop + lookahead + crossfade (+ device buffers).
 from __future__ import annotations
 
 import collections
+import os
 import queue
 import threading
 import time
@@ -79,11 +80,41 @@ PRESETS: dict[str, Preset] = {
 }
 DEFAULT_PRESET = "clean"
 
+# Heavier models need their own timings. BS-RoFormer (160 M params) runs a 1.5 s
+# window in ~45 ms (p99 50-75 ms) on an RTX 4090; live-sim SI-SDR on the 4-item
+# TTS test set is 22-23 dB at these settings vs ~13.6 dB for HTDemucs.
+MODEL_PRESETS: dict[str, dict[str, Preset]] = {
+    "bs-roformer-live": {
+        "clean": Preset("Clean", hop_s=0.15, lookahead_s=0.20, crossfade_s=0.05,
+                        window_s=2.0, jitter_s=0.10),
+        "balanced": Preset("Balanced", hop_s=0.10, lookahead_s=0.10, crossfade_s=0.05,
+                           window_s=1.5, jitter_s=0.10),
+        "fast": Preset("Fast", hop_s=0.10, lookahead_s=0.05, crossfade_s=0.02,
+                       window_s=1.5, jitter_s=0.10),
+    },
+    # MRX: ~43 ms per 3 s window (fp16 + CUDA graph). Timing-based; per-preset quality
+    # not measured yet. Steps stay at 0.1 s so the LSTMs keep up.
+    "mrx": {
+        "clean": Preset("Clean", hop_s=0.10, lookahead_s=0.20, crossfade_s=0.05,
+                        window_s=3.0, jitter_s=0.10),
+        "balanced": Preset("Balanced", hop_s=0.10, lookahead_s=0.10, crossfade_s=0.05,
+                           window_s=3.0, jitter_s=0.10),
+        "fast": Preset("Fast", hop_s=0.10, lookahead_s=0.05, crossfade_s=0.02,
+                       window_s=2.0, jitter_s=0.10),
+    },
+}
+
+
+def presets_for(model_key: str) -> dict[str, Preset]:
+    """Latency presets suited to a model (HTDemucs-tuned ones by default)."""
+    return MODEL_PRESETS.get(model_key, PRESETS)
+
 
 class StreamingProcessor:
     """Feed `hop` frames in, get `hop` filtered frames out, delayed by lookahead + crossfade."""
 
-    def __init__(self, separator: SpeechSeparator, config: LiveConfig) -> None:
+    def __init__(self, separator: SpeechSeparator, config: LiveConfig,
+                 stems: bool = False) -> None:
         info = separator.info
         if info.live_window_seconds is None and config.window_s is None:
             raise SeparationError(f"model '{info.key}' does not support live mode")
@@ -91,8 +122,11 @@ class StreamingProcessor:
         self.sr, self.channels = info.sample_rate, info.channels
         self.window, self.hop, self.look, self.fade = config.frames(
             self.sr, info.live_window_seconds)
+        # stems=True: step() returns every stem (n_stems, hop, channels) for mixing.
+        self.stems = stems
+        self.n_stems = len(info.stems) if stems else 1
         self.buf = np.zeros((self.window, self.channels), np.float32)
-        self.tail = np.zeros((self.fade, self.channels), np.float32)
+        self.tail = np.zeros((self.n_stems, self.fade, self.channels), np.float32)
         ramp = (np.arange(self.fade) + 0.5) / max(self.fade, 1)
         self.ramp = ramp[:, None].astype(np.float32)
         self.bypass = False
@@ -101,14 +135,21 @@ class StreamingProcessor:
         if block.shape != (self.hop, self.channels):
             raise ValueError(f"expected block {(self.hop, self.channels)}, got {block.shape}")
         self.buf = np.concatenate([self.buf[self.hop:], block])
-        est = self.buf if self.bypass else np.asarray(self.separator.separate(self.buf),
-                                                      dtype=np.float32)
+        if self.bypass:
+            # Original audio in the first slot; the engine plays that slot alone.
+            est = np.zeros((self.n_stems, self.window, self.channels), np.float32)
+            est[0] = self.buf
+        elif self.stems:
+            est = np.asarray(self.separator.separate_stems(self.buf), dtype=np.float32)
+        else:
+            est = np.asarray(self.separator.separate(self.buf), dtype=np.float32)[None]
         end = self.window - self.look
-        seg = est[end - self.hop - self.fade:end].copy()
+        seg = est[:, end - self.hop - self.fade:end].copy()
         if self.fade:
-            seg[:self.fade] = self.tail * (1 - self.ramp) + seg[:self.fade] * self.ramp
-            self.tail = seg[self.hop:]
-        return seg[:self.hop]
+            seg[:, :self.fade] = self.tail * (1 - self.ramp) + seg[:, :self.fade] * self.ramp
+            self.tail = seg[:, self.hop:]
+        out = seg[:, :self.hop]
+        return out if self.stems else out[0]
 
     @property
     def delay_frames(self) -> int:
@@ -159,14 +200,21 @@ class LiveEngine:
 
     def __init__(self, separator: SpeechSeparator, config: LiveConfig,
                  input_device=None, output_device=None, jitter_s: float = 0.1,
-                 device_latency: str | float = "low") -> None:
-        self.proc = StreamingProcessor(separator, config)
+                 device_latency: str | float = "low", gains=None) -> None:
+        self.proc = StreamingProcessor(separator, config, stems=True)
+        # One gain per stem (separator.info.stems); changeable while running.
+        # Default: voice only.
+        self.gains = np.zeros(self.proc.n_stems, np.float32)
+        self.gains[0] = 1.0
+        if gains is not None:
+            self.set_gains(gains)
         self.config = config
         self.input_device, self.output_device = input_device, output_device
         self.jitter = int(round(jitter_s * self.proc.sr))
         # PortAudio buffer request ("low"/"high"/seconds); the granted value is read back.
         self.device_latency = device_latency
         self.output_latency_s = 0.0
+        self.out_channels = self.proc.channels  # narrowed in run() for mono devices
         self.stats = Stats()
         # Up to 4 hops of unprocessed input; beyond that the GPU is not keeping up.
         self.inq: queue.Queue[np.ndarray] = queue.Queue(maxsize=64)
@@ -202,7 +250,7 @@ class LiveEngine:
                 if self.out_frames == 0:
                     outdata.fill(0)
                     return
-                self.out.appendleft(np.zeros((self.jitter, self.proc.channels), np.float32))
+                self.out.appendleft(np.zeros((self.jitter, self.out_channels), np.float32))
                 self.out_frames += self.jitter
                 self.started_output = True
             filled = 0
@@ -236,12 +284,15 @@ class LiveEngine:
             while self.pending.shape[0] >= hop:
                 block, self.pending = self.pending[:hop], self.pending[hop:]
                 t0 = time.perf_counter()
-                y = self.proc.step(block)
+                stems = self.proc.step(block)
+                y = stems[0] if self.proc.bypass else np.tensordot(self.gains, stems, axes=1)
                 self.stats.step_ms.append((time.perf_counter() - t0) * 1000)
                 self.stats.steps += 1
                 y = np.clip(y, -1.0, 1.0)
                 if self.recorded is not None:
                     self.recorded.append(y)
+                if y.shape[1] > self.out_channels:  # e.g. stereo model -> mono headset
+                    y = y.mean(axis=1, keepdims=True)
                 with self.out_lock:
                     trough = self.out_frames if self.started_output else self.jitter
                 y = self._rate_adjust(y, trough)
@@ -271,6 +322,17 @@ class LiveEngine:
         pos = np.linspace(0, n - 1, m)
         return np.stack([np.interp(pos, np.arange(n), y[:, c]) for c in range(y.shape[1])],
                         axis=1).astype(np.float32)
+
+    def set_gains(self, gains) -> None:
+        """Set stem gains: a sequence in stem order, or a {stem_name: gain} dict."""
+        names = self.proc.separator.info.stems
+        if isinstance(gains, dict):
+            g = np.array([float(gains.get(n, 0.0)) for n in names], np.float32)
+        else:
+            g = np.asarray(gains, np.float32)
+        if g.shape != (len(names),):
+            raise ValueError(f"need {len(names)} gains for stems {names}")
+        self.gains = g  # swapped atomically; the worker reads it once per step
 
     def _drop_oldest(self, n: int) -> None:
         """Discard exactly n queued output frames (caller holds out_lock)."""
@@ -317,15 +379,25 @@ class LiveEngine:
         import sounddevice as sd
 
         sr, ch = self.proc.sr, self.proc.channels
+        if os.name == "nt":
+            # WASAPI streams opened from a thread without COM initialised fail to start
+            # intermittently ("Unanticipated host error"); the app runs us on a thread.
+            import ctypes
+
+            ctypes.windll.ole32.CoInitializeEx(None, 0)
         self.warm_up()
         extra_out = sd.WasapiSettings(auto_convert=True) if _is_wasapi(self.output_device) else None
+        # Bluetooth headsets in hands-free mode expose a mono output; match the device.
+        device_info = sd.query_devices(self.output_device, kind="output")
+        self.out_channels = max(1, min(ch, int(device_info["max_output_channels"])))
         self.running = True
         worker = threading.Thread(target=self._worker, daemon=True)
         worker.start()
         try:
             with contextlib.ExitStack() as stack:
                 out_stream = stack.enter_context(sd.OutputStream(
-                    device=self.output_device, samplerate=sr, channels=ch, dtype="float32",
+                    device=self.output_device, samplerate=sr, channels=self.out_channels,
+                    dtype="float32",
                     callback=self._on_output, extra_settings=extra_out,
                     latency=self.device_latency))
                 self.output_latency_s = float(out_stream.latency)
