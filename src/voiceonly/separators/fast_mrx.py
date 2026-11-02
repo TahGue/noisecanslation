@@ -32,7 +32,7 @@ class MRXGraphRunner:
             torch.cuda.current_stream().wait_stream(stream)
             try:
                 graph = torch.cuda.CUDAGraph()
-                with torch.cuda.graph(graph):
+                with torch.cuda.graph(graph, capture_error_mode="thread_local"):
                     self.static_masks = self._core()
                 self.graph = graph
             except Exception:

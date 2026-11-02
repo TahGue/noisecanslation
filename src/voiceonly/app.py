@@ -24,6 +24,7 @@ from pathlib import Path
 from tkinter import ttk
 
 from . import separators, winaudio
+from .separators.base import GPU_LOCK
 from .live import DEFAULT_PRESET, LiveConfig, LiveEngine, LoopbackCapture, find_device, presets_for
 from .mixer import DEFAULT_MODE, MODES, available, gains_for
 
@@ -111,6 +112,8 @@ class App:
         self.resume_filter = False  # go back to Filtered once a model switch finishes
         self.engine: LiveEngine | None = None
         self.engine_thread: threading.Thread | None = None
+        # Stopped engines that were still warming up; finished before a model is freed.
+        self.stopping: list[threading.Thread] = []
         self.events: queue.Queue[tuple] = queue.Queue()
         self.combos: list[ttk.Combobox] = []
         self.next_device_check = 0.0
@@ -382,7 +385,8 @@ class App:
     def set_model(self, key: str) -> None:
         if key == self.cfg["model"] and self.separator is not None:
             return
-        self.resume_filter = self.mode == "filter"
+        # Keep the intent across back-to-back switches (the first one already stopped us).
+        self.resume_filter = self.resume_filter or self.mode == "filter"
         if self.mode == "filter":
             self.set_mode("normal")
         self.cfg["model"] = key
@@ -478,8 +482,13 @@ class App:
         if self.engine is not None:
             self.engine.running = False
             if self.engine_thread is not None:
-                self.engine_thread.join(timeout=3)
+                # Usually ends within 50 ms; during CUDA-graph warm-up it can take a few
+                # seconds. Don't freeze the window: track it and let it finish.
+                self.engine_thread.join(timeout=0.5)
+                if self.engine_thread.is_alive():
+                    self.stopping.append(self.engine_thread)
             self.engine, self.engine_thread = None, None
+        self.stopping = [t for t in self.stopping if t.is_alive()]
 
     def _run_engine(self, engine: LiveEngine) -> None:
         try:
@@ -556,12 +565,18 @@ class App:
         self._refresh_all()
         self._set_status(f"Loading {next(lbl for k, lbl, _ in MODEL_CHOICES if k == key)}…")
 
+        stopping = list(self.stopping)
+
         def work() -> None:
+            for t in stopping:
+                t.join()  # an engine still using the old model must finish first
             if old is not None:
-                old.close()  # free GPU memory before loading the next model
+                with GPU_LOCK:
+                    old.close()  # free GPU memory before loading the next model
             try:
                 sep = separators.create(key)
-                sep.initialize()
+                with GPU_LOCK:
+                    sep.initialize()
                 self.events.put(("model_ready", key, sep))
             except Exception as e:
                 log.exception("model load failed")

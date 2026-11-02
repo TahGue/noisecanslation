@@ -6,6 +6,7 @@ capabilities recorded here carry over unchanged.
 
 from __future__ import annotations
 
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 
@@ -39,6 +40,12 @@ class ModelInfo:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+# One model call on the GPU at a time. Live engines can briefly overlap (stopping one
+# while the next starts) and a CUDA-graph capture is invalidated by GPU work from
+# another thread, so every live model call and model load holds this lock.
+GPU_LOCK = threading.RLock()
 
 
 class SeparationError(RuntimeError):

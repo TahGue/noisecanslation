@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .separators import SeparationError, SpeechSeparator
+from .separators.base import GPU_LOCK
 
 
 @dataclass
@@ -140,9 +141,11 @@ class StreamingProcessor:
             est = np.zeros((self.n_stems, self.window, self.channels), np.float32)
             est[0] = self.buf
         elif self.stems:
-            est = np.asarray(self.separator.separate_stems(self.buf), dtype=np.float32)
+            with GPU_LOCK:
+                est = np.asarray(self.separator.separate_stems(self.buf), dtype=np.float32)
         else:
-            est = np.asarray(self.separator.separate(self.buf), dtype=np.float32)[None]
+            with GPU_LOCK:
+                est = np.asarray(self.separator.separate(self.buf), dtype=np.float32)[None]
         end = self.window - self.look
         seg = est[:, end - self.hop - self.fade:end].copy()
         if self.fade:
@@ -349,9 +352,11 @@ class LiveEngine:
 
     def warm_up(self) -> None:
         """Run the model once so CUDA kernel setup does not stall the first live steps."""
-        bypass, self.proc.bypass = self.proc.bypass, False
-        self.proc.separator.separate(np.zeros_like(self.proc.buf))
-        self.proc.bypass = bypass
+        with GPU_LOCK:
+            if self.proc.stems:
+                self.proc.separator.separate_stems(np.zeros_like(self.proc.buf))
+            else:
+                self.proc.separator.separate(np.zeros_like(self.proc.buf))
 
     def _feed_file(self, audio: np.ndarray, block: int) -> None:
         """Stand-in for a capture device: deliver `audio` in real time."""
@@ -385,12 +390,14 @@ class LiveEngine:
             import ctypes
 
             ctypes.windll.ole32.CoInitializeEx(None, 0)
-        self.warm_up()
+        self.running = True
+        self.warm_up()  # builds CUDA graphs; can take a few seconds
+        if not self.running:
+            return  # stopped while warming up: never open the audio devices
         extra_out = sd.WasapiSettings(auto_convert=True) if _is_wasapi(self.output_device) else None
         # Bluetooth headsets in hands-free mode expose a mono output; match the device.
         device_info = sd.query_devices(self.output_device, kind="output")
         self.out_channels = max(1, min(ch, int(device_info["max_output_channels"])))
-        self.running = True
         worker = threading.Thread(target=self._worker, daemon=True)
         worker.start()
         try:
@@ -445,7 +452,11 @@ class LoopbackCapture:
 
     def run(self, engine: "LiveEngine") -> None:
         import ctypes
+        import warnings
 
+        # Capture hiccups under load are reported per block; the engine already
+        # absorbs them, so the warnings would only flood the console log.
+        warnings.filterwarnings("ignore", message="data discontinuity in recording")
         # soundcard talks to WASAPI through COM, which must be set up per thread.
         ctypes.windll.ole32.CoInitializeEx(None, 0)
         sr, ch = engine.proc.sr, engine.proc.channels
