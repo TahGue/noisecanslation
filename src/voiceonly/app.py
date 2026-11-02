@@ -274,7 +274,11 @@ class App:
         card, self.delay_label, self.adv_switch = self._card(
             "Latency", "Advanced", self._toggle_advanced)
         self.preset_row = ctk.CTkFrame(card, fg_color="transparent")
-        self.preset_row.pack(fill="x", padx=14, pady=(0, 12))
+        self.preset_row.pack(fill="x", padx=14, pady=(0, 4))
+        _label(card, "Lowest delay: Fast · HTDemucs + Instant (~0.08 s). Bluetooth "
+                     "headphones add ~0.2–0.3 s on top; wired ones add none.",
+               10, color=COLORS["muted"], anchor="w", justify="left", wraplength=400
+               ).pack(fill="x", padx=14, pady=(0, 12))
         self.preset_buttons: dict[str, ctk.CTkButton] = {}
         self.adv_frame = ctk.CTkFrame(card, fg_color="transparent")
         self.adv_vars, self.adv_values = {}, {}

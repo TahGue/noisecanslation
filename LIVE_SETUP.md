@@ -39,6 +39,17 @@ Requirements for the "sink" output (`SINK=` in the .bat):
 
 ## Latency presets
 
+**Lowest delay:** Fast · HTDemucs + **Instant** (30 ms steps, no lookahead): 0.078 s
+measured before Bluetooth, 0 glitches in real time, voice 10.5 dB. TIGER + Instant:
+0.19 s, voice 11.7 dB. BS-RoFormer cannot go below its Fast preset (~0.22 s): smaller
+steps do not make it faster and caused glitches. Bluetooth headphones add ~0.2-0.3 s
+on top (codec + radio, invisible to the PC); wired headphones add none.
+
+The safety buffer is adaptive (decision 0007): it starts at the preset value and settles
+at 15-25 ms on an RTX 4090, so real delays are below the table's engine delay.
+
+HTDemucs presets (other models have their own, shown in the app):
+
 | Preset | Step | Lookahead | Window | Safety buffer | Engine delay | Voice quality* |
 |---|---|---|---|---|---|---|
 | Clean | 0.10 s | 0.20 s | 4 s | 0.10 s | ~0.45 s | best (SI-SDR 15.1 dB) |

@@ -78,6 +78,10 @@ PRESETS: dict[str, Preset] = {
                    jitter_s=0.06),
     "ultra": Preset("Ultra", hop_s=0.04, lookahead_s=0.02, crossfade_s=0.01, window_s=2.0,
                     jitter_s=0.05),
+    # No lookahead, 30 ms steps: ~0.08 s before Bluetooth. Live-sim voice 10.5 dB
+    # (Ultra 11.4); 9.8 ms per step on an RTX 4090 (2.7x headroom).
+    "instant": Preset("Instant", hop_s=0.03, lookahead_s=0.0, crossfade_s=0.01, window_s=1.5,
+                      jitter_s=0.03),
 }
 DEFAULT_PRESET = "clean"
 
@@ -102,6 +106,9 @@ MODEL_PRESETS: dict[str, dict[str, Preset]] = {
                            window_s=2.0, jitter_s=0.10),
         "fast": Preset("Fast", hop_s=0.10, lookahead_s=0.10, crossfade_s=0.05,
                        window_s=1.0, jitter_s=0.10),
+        # ~0.19 s before Bluetooth; live-sim voice 11.7 dB (Fast 13.7).
+        "instant": Preset("Instant", hop_s=0.10, lookahead_s=0.03, crossfade_s=0.02,
+                          window_s=1.0, jitter_s=0.05),
     },
     # MRX: ~43 ms per 3 s window (fp16 + CUDA graph). Timing-based; per-preset quality
     # not measured yet. Steps stay at 0.1 s so the LSTMs keep up.
