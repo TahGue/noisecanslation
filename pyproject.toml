@@ -8,6 +8,7 @@ dependencies = [
     "scipy>=1.14",
     "soundfile>=0.12",
     "sounddevice>=0.5",
+    "customtkinter>=5.2",
     "soundcard>=0.4.3",
 ]
 

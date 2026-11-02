@@ -89,7 +89,7 @@ def test_mix_modes_follow_the_model(make_app):
     a._refresh_keep()
     assert str(a.mix_buttons["no_music"].cget("state")) == "disabled"
     assert set(a.mixer_vars) == {"voice", "drums", "bass", "other"}
-    a.cfg["model"] = "mrx"
+    a.cfg["model"] = "tiger"
     a._refresh_keep()
     assert str(a.mix_buttons["no_music"].cget("state")) == "normal"
     assert set(a.mixer_vars) == {"voice", "music", "effects"}
@@ -97,7 +97,7 @@ def test_mix_modes_follow_the_model(make_app):
 
 def test_custom_mixer_levels_are_kept_per_model(make_app):
     a, _ = make_app()
-    a.cfg["model"] = "mrx"
+    a.cfg["model"] = "tiger"
     a._refresh_keep()
     a.mixer_vars["effects"].set(40)
     a._mixer_changed()
@@ -110,6 +110,6 @@ def test_switching_model_resets_modes_it_cannot_do(make_app, monkeypatch):
     a, _ = make_app()
     loaded = []
     monkeypatch.setattr(a, "_load_model", loaded.append)
-    a.cfg["model"], a.cfg["mix"] = "mrx", "no_music"
+    a.cfg["model"], a.cfg["mix"] = "tiger", "no_music"
     a.set_model("htdemucs")
     assert loaded == ["htdemucs"] and a.cfg["mix"] == "voice"

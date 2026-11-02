@@ -48,10 +48,12 @@ def _spectro(x, n_fft=512, hop_length=None, pad=0):
     return z.view(*other, freqs, frames)
 
 
-def istft(z: torch.Tensor, n_fft: int, hop: int, window: torch.Tensor, length: int):
-    """torch.istft(normalized=True, center=True) without the CPU-side envelope check."""
+def istft(z: torch.Tensor, n_fft: int, hop: int, window: torch.Tensor, length: int,
+          normalized: bool = True):
+    """torch.istft(center=True) without the CPU-side envelope check."""
     n_frames = z.shape[-1]
-    frames = torch.fft.irfft(z, n=n_fft, dim=1) * (n_fft ** 0.5) * window[None, :, None]
+    scale = n_fft ** 0.5 if normalized else 1.0
+    frames = torch.fft.irfft(z, n=n_fft, dim=1) * scale * window[None, :, None]
     out_len = n_fft + hop * (n_frames - 1)
     ola = F.fold(frames, output_size=(1, out_len), kernel_size=(1, n_fft),
                  stride=(1, hop))[:, 0, 0]

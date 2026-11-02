@@ -21,22 +21,23 @@ import threading
 import time
 import tkinter as tk
 from pathlib import Path
-from tkinter import ttk
+
+import customtkinter as ctk
 
 from . import separators, winaudio
-from .separators.base import GPU_LOCK
+from .doctor import load_benchmarks, report
 from .live import DEFAULT_PRESET, LiveConfig, LiveEngine, LoopbackCapture, find_device, presets_for
 from .mixer import DEFAULT_MODE, MODES, available, gains_for
+from .separators.base import GPU_LOCK
 
 CONFIG_DIR = Path(os.environ.get("APPDATA", Path.home())) / "VoiceOnly"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 
 # (registry key, label, one-line description)
 MODEL_CHOICES = [
-    ("htdemucs", "Fast · HTDemucs", "Lightest. Stems: voice, drums, bass, other."),
-    ("bs-roformer-live", "Best voice · BS-RoFormer",
-     "Cleanest voice (~9 dB better). Stems: voice, background."),
-    ("mrx", "Cinematic · MRX", "Splits music from sound effects. Stems: voice, music, effects."),
+    ("htdemucs", "Fast · HTDemucs", "Lightest on the GPU. Voice, drums, bass, other."),
+    ("tiger", "Cinematic · TIGER", "Separates music from sound effects. Voice, music, effects."),
+    ("bs-roformer-live", "Best voice · BS-RoFormer", "Cleanest dialogue. Voice, background."),
 ]
 MODEL_KEYS = [k for k, _, _ in MODEL_CHOICES]
 
@@ -51,9 +52,10 @@ ADVANCED = [("hop_s", "Step", 0.02, 0.25, 0.01),
             ("jitter_s", "Safety buffer", 0.02, 0.30, 0.01),
             ("window_s", "Model window", 1.0, 7.5, 0.5)]
 
-COLORS = {"bg": "#16181d", "panel": "#20232b", "text": "#e8eaf0", "muted": "#8a90a0",
-          "filter": "#3ddc97", "normal": "#5b8def", "off": "#2c3039", "error": "#ff6b6b",
-          "accent": "#f2c14e"}
+COLORS = {"bg": "#111318", "card": "#1b1e25", "card_hi": "#232733", "line": "#2e3340",
+          "text": "#e9ecf2", "muted": "#8a91a2", "filter": "#34d399", "filter_dark": "#0f3d2e",
+          "normal": "#5b8def", "off": "#2a2f3a", "error": "#ff6b6b", "warn": "#f2c14e"}
+FONT = "Segoe UI"
 
 MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, WM_HOTKEY = 0x1, 0x2, 0x4000, 0x0312
 
@@ -66,6 +68,8 @@ def load_config() -> dict:
         cfg = {**DEFAULTS, **{k: v for k, v in saved.items() if k in SAVED_KEYS}}
     except (OSError, ValueError):
         cfg = dict(DEFAULTS)
+    if cfg["model"] == "mrx":
+        cfg["model"] = "tiger"  # Cinematic moved from MRX to TIGER (better on every stem)
     if cfg["model"] not in MODEL_KEYS:
         cfg["model"] = DEFAULTS["model"]
     if cfg["preset"] not in presets_for(cfg["model"]) and not (
@@ -91,16 +95,24 @@ def _output_device(name: str):
         return find_device(inner, "output")
 
 
-def _button(parent, text: str, command, size: int = 9, **kw) -> tk.Button:
-    return tk.Button(parent, text=text, font=("Segoe UI", size), relief="flat", bd=0,
-                     cursor="hand2", command=command, **kw)
+def _label(parent, text: str = "", size: int = 12, weight: str = "normal",
+           color: str = COLORS["text"], **kw) -> ctk.CTkLabel:
+    return ctk.CTkLabel(parent, text=text, font=ctk.CTkFont(FONT, size, weight),
+                        text_color=color, **kw)
 
 
-def _paint(button: tk.Button, active: bool, color: str, enabled: bool = True) -> None:
-    bg = color if active else COLORS["off"]
-    button.configure(bg=bg, activebackground=bg, state="normal" if enabled else "disabled",
-                     fg="#0d0f12" if active else (COLORS["text"] if enabled else COLORS["muted"]),
-                     disabledforeground=COLORS["muted"])
+def _chip_button(parent, text: str, command) -> ctk.CTkButton:
+    return ctk.CTkButton(parent, text=text, command=command, height=32, corner_radius=8,
+                         font=ctk.CTkFont(FONT, 12), fg_color=COLORS["off"],
+                         hover_color=COLORS["card_hi"], text_color=COLORS["text"],
+                         text_color_disabled=COLORS["muted"])
+
+
+def _paint(button: ctk.CTkButton, active: bool, color: str, enabled: bool = True) -> None:
+    button.configure(fg_color=color if active else COLORS["off"],
+                     hover_color=color if active else COLORS["card_hi"],
+                     text_color="#0b0d10" if active else COLORS["text"],
+                     state="normal" if enabled else "disabled")
 
 
 class App:
@@ -115,14 +127,16 @@ class App:
         # Stopped engines that were still warming up; finished before a model is freed.
         self.stopping: list[threading.Thread] = []
         self.events: queue.Queue[tuple] = queue.Queue()
-        self.combos: list[ttk.Combobox] = []
+        self.combos: list[ctk.CTkOptionMenu] = []
         self.next_device_check = 0.0
         self.load_error: Exception | None = None
+        self.bench = load_benchmarks().get("models", {})
 
-        self.root = tk.Tk()
+        ctk.set_appearance_mode("dark")
+        self.root = ctk.CTk(fg_color=COLORS["bg"])
         self.root.title("VoiceOnly")
-        self.root.configure(bg=COLORS["bg"])
-        self.root.resizable(False, False)
+        self.root.geometry("480x900")
+        self.root.minsize(440, 600)
         self.root.protocol("WM_DELETE_WINDOW", self.quit)
         self._build_ui()
         self._fix_leftover_routing()
@@ -134,145 +148,211 @@ class App:
     # ---------- layout ----------
 
     def _build_ui(self) -> None:
-        pad = {"padx": 16}
-        tk.Label(self.root, text="VoiceOnly", font=("Segoe UI Semibold", 16),
-                 bg=COLORS["bg"], fg=COLORS["text"]).pack(anchor="w", pady=(14, 0), **pad)
-        tk.Label(self.root, text="Choose what you hear from your PC", font=("Segoe UI", 9),
-                 bg=COLORS["bg"], fg=COLORS["muted"]).pack(anchor="w", **pad)
+        body = ctk.CTkScrollableFrame(self.root, fg_color=COLORS["bg"], corner_radius=0)
+        body.pack(fill="both", expand=True)
+        self.body = body
+        pad = {"padx": 18}
 
-        row = tk.Frame(self.root, bg=COLORS["bg"])
+        head = ctk.CTkFrame(body, fg_color="transparent")
+        head.pack(fill="x", pady=(16, 2), **pad)
+        _label(head, "VoiceOnly", 22, "bold").pack(side="left")
+        self.pill = ctk.CTkLabel(head, text="Loading", corner_radius=10, height=24, width=96,
+                                 font=ctk.CTkFont(FONT, 11, "bold"), fg_color=COLORS["off"],
+                                 text_color=COLORS["muted"])
+        self.pill.pack(side="right")
+        _label(body, "Choose what you hear from your PC", 12, color=COLORS["muted"]
+               ).pack(anchor="w", **pad)
+
+        row = ctk.CTkFrame(body, fg_color="transparent")
         row.pack(fill="x", pady=(14, 8), **pad)
-        self.btn_normal = _button(row, "Normal", lambda: self.set_mode("normal"), 12,
-                                  height=2, width=11)
-        self.btn_filter = _button(row, "Voice only", lambda: self.set_mode("filter"), 12,
-                                  height=2, width=11)
-        self.btn_normal.pack(side="left", expand=True, fill="x", padx=(0, 6))
-        self.btn_filter.pack(side="left", expand=True, fill="x", padx=(6, 0))
+        row.columnconfigure((0, 1), weight=1, uniform="m")
+        self.btn_normal = ctk.CTkButton(row, text="Normal", height=64, corner_radius=14,
+                                        font=ctk.CTkFont(FONT, 17, "bold"),
+                                        command=lambda: self.set_mode("normal"))
+        self.btn_filter = ctk.CTkButton(row, text="Voice only", height=64, corner_radius=14,
+                                        font=ctk.CTkFont(FONT, 17, "bold"),
+                                        text_color_disabled=COLORS["muted"],
+                                        command=lambda: self.set_mode("filter"))
+        self.btn_normal.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self.btn_filter.grid(row=0, column=1, sticky="ew", padx=(6, 0))
 
-        self.status = tk.Label(self.root, text="Loading model…", font=("Segoe UI", 9),
-                               bg=COLORS["bg"], fg=COLORS["muted"], anchor="w", justify="left",
-                               wraplength=360)
-        self.status.pack(fill="x", **pad)
+        stats = ctk.CTkFrame(body, fg_color="transparent")
+        stats.pack(fill="x", **pad)
+        stats.columnconfigure((0, 1, 2), weight=1, uniform="s")
+        self.stat_labels = {}
+        for i, (key, title) in enumerate((("delay", "Delay"), ("gpu", "GPU / step"),
+                                          ("glitches", "Glitches"))):
+            box = ctk.CTkFrame(stats, fg_color=COLORS["card"], corner_radius=10)
+            box.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 4, 0 if i == 2 else 4))
+            _label(box, title, 10, color=COLORS["muted"]).pack(pady=(6, 0))
+            self.stat_labels[key] = _label(box, "—", 15, "bold")
+            self.stat_labels[key].pack(pady=(0, 6))
 
-        self._build_keep(pad)
-        self._build_model(pad)
+        self.status = _label(body, "Loading model…", 12, color=COLORS["muted"],
+                             anchor="w", justify="left", wraplength=420)
+        self.status.pack(fill="x", pady=(8, 0), **pad)
+
+        self._build_keep()
+        self._build_model()
+        self._build_latency()
         self._build_devices()
-        self._build_latency(pad)
 
-        self.hint = tk.Label(self.root, text="Ctrl+Alt+V switches Normal / Filtered from any app",
-                             font=("Segoe UI", 8), bg=COLORS["bg"], fg=COLORS["muted"])
-        self.hint.pack(anchor="w", pady=(8, 14), **pad)
+        foot = ctk.CTkFrame(body, fg_color="transparent")
+        foot.pack(fill="x", pady=(10, 18), **pad)
+        self.hint = _label(foot, "Ctrl+Alt+V switches Normal / Filtered from any app", 11,
+                           color=COLORS["muted"])
+        self.hint.pack(side="left")
+        ctk.CTkButton(foot, text="System check", width=110, height=28, corner_radius=8,
+                      fg_color=COLORS["off"], hover_color=COLORS["card_hi"],
+                      font=ctk.CTkFont(FONT, 11), command=self._show_doctor).pack(side="right")
         self._refresh_all()
 
-    def _section(self, title: str, pad: dict, toggle=None, toggle_text: str = ""):
-        head = tk.Frame(self.root, bg=COLORS["bg"])
-        head.pack(fill="x", pady=(14, 4), **pad)
-        tk.Label(head, text=title, font=("Segoe UI Semibold", 10), bg=COLORS["bg"],
-                 fg=COLORS["text"]).pack(side="left")
-        note = tk.Label(head, text="", font=("Segoe UI", 9), bg=COLORS["bg"], fg=COLORS["muted"])
-        note.pack(side="left", padx=8)
-        btn = None
-        if toggle:
-            btn = _button(head, toggle_text, toggle, 8, bg=COLORS["bg"], fg=COLORS["muted"],
-                          activebackground=COLORS["bg"])
-            btn.pack(side="right")
-        return note, btn
+    def _card(self, title: str, toggle_text: str | None = None, toggle=None):
+        card = ctk.CTkFrame(self.body, fg_color=COLORS["card"], corner_radius=14)
+        card.pack(fill="x", padx=18, pady=(12, 0))
+        head = ctk.CTkFrame(card, fg_color="transparent")
+        head.pack(fill="x", padx=14, pady=(12, 6))
+        _label(head, title, 14, "bold").pack(side="left")
+        note = _label(head, "", 11, color=COLORS["muted"])
+        note.pack(side="left", padx=10)
+        switch = None
+        if toggle_text:
+            switch = ctk.CTkSwitch(head, text=toggle_text, command=toggle, width=40,
+                                   font=ctk.CTkFont(FONT, 11), text_color=COLORS["muted"],
+                                   progress_color=COLORS["filter"])
+            switch.pack(side="right")
+        return card, note, switch
 
-    def _build_keep(self, pad: dict) -> None:
-        self.keep_note, self.mixer_button = self._section(
-            "Keep", pad, self._toggle_mixer, "Mixer ▸")
-        row = tk.Frame(self.root, bg=COLORS["bg"])
-        row.pack(fill="x", **pad)
+    def _build_keep(self) -> None:
+        card, self.keep_note, self.mixer_switch = self._card("Keep", "Mixer", self._toggle_mixer)
+        grid = ctk.CTkFrame(card, fg_color="transparent")
+        grid.pack(fill="x", padx=14, pady=(0, 12))
+        grid.columnconfigure((0, 1, 2), weight=1, uniform="k")
         self.mix_buttons = {}
-        for key, mode in MODES.items():
-            b = _button(row, mode.label, lambda k=key: self.set_mix(k), 8, width=9)
-            b.pack(side="left", expand=True, fill="x", padx=2)
+        for i, (key, mode) in enumerate(MODES.items()):
+            b = _chip_button(grid, mode.label, lambda k=key: self.set_mix(k))
+            b.grid(row=i // 3, column=i % 3, sticky="ew", padx=3, pady=3)
             self.mix_buttons[key] = b
-        self.mixer_frame = tk.Frame(self.root, bg=COLORS["panel"])
+        self.mix_grid = grid
+        self.mixer_frame = ctk.CTkFrame(card, fg_color="transparent")
         self.mixer_vars: dict[str, tk.DoubleVar] = {}
         self.mixer_visible = False
 
-    def _build_model(self, pad: dict) -> None:
-        self.model_note, _ = self._section("Model", pad)
-        frame = tk.Frame(self.root, bg=COLORS["bg"])
-        frame.pack(fill="x", **pad)
-        labels = [label for _, label, _ in MODEL_CHOICES]
-        self.model_var = tk.StringVar(value=labels[MODEL_KEYS.index(self.cfg["model"])])
-        box = ttk.Combobox(frame, textvariable=self.model_var, values=labels, state="readonly")
-        box.pack(fill="x")
-        box.bind("<<ComboboxSelected>>",
-                 lambda _e: self.set_model(MODEL_KEYS[labels.index(self.model_var.get())]))
-        self.model_desc = tk.Label(frame, text="", font=("Segoe UI", 8), bg=COLORS["bg"],
-                                   fg=COLORS["muted"], anchor="w")
-        self.model_desc.pack(fill="x", pady=(2, 0))
+    def _build_model(self) -> None:
+        card, self.model_note, _ = self._card("Model")
+        self.model_cards: dict[str, dict] = {}
+        for key, label, desc in MODEL_CHOICES:
+            box = ctk.CTkFrame(card, fg_color=COLORS["card_hi"], corner_radius=12,
+                               border_width=2, border_color=COLORS["card_hi"])
+            box.pack(fill="x", padx=14, pady=(0, 8))
+            top = ctk.CTkFrame(box, fg_color="transparent")
+            top.pack(fill="x", padx=12, pady=(10, 0))
+            title = _label(top, label, 13, "bold")
+            title.pack(side="left")
+            badge = _label(top, "", 11, color=COLORS["muted"])
+            badge.pack(side="right")
+            _label(box, desc, 11, color=COLORS["muted"], anchor="w").pack(fill="x", padx=12)
+            bars = ctk.CTkFrame(box, fg_color="transparent")
+            bars.pack(fill="x", padx=12, pady=(4, 10))
+            bars.columnconfigure((1, 3), weight=1)
+            widgets = {"box": box, "badge": badge}
+            for col, name in ((0, "Quality"), (2, "Speed")):
+                _label(bars, name, 10, color=COLORS["muted"]).grid(row=0, column=col, padx=(0, 6))
+                bar = ctk.CTkProgressBar(bars, height=6, progress_color=COLORS["filter"],
+                                         fg_color=COLORS["off"])
+                bar.grid(row=0, column=col + 1, sticky="ew", padx=(0, 12))
+                widgets[name.lower()] = bar
+            widgets["facts"] = _label(box, "", 10, color=COLORS["muted"], anchor="w")
+            widgets["facts"].pack(fill="x", padx=12, pady=(0, 10))
+            for w in (box, top, title, bars):
+                w.bind("<Button-1>", lambda _e, k=key: self.set_model(k))
+            box.configure(cursor="hand2")
+            self.model_cards[key] = widgets
+        self.model_var = tk.StringVar(value=self.cfg["model"])
+
+    def _build_latency(self) -> None:
+        card, self.delay_label, self.adv_switch = self._card(
+            "Latency", "Advanced", self._toggle_advanced)
+        self.preset_row = ctk.CTkFrame(card, fg_color="transparent")
+        self.preset_row.pack(fill="x", padx=14, pady=(0, 12))
+        self.preset_buttons: dict[str, ctk.CTkButton] = {}
+        self.adv_frame = ctk.CTkFrame(card, fg_color="transparent")
+        self.adv_vars, self.adv_values = {}, {}
+        for i, (key, label, lo, hi, step) in enumerate(ADVANCED):
+            _label(self.adv_frame, label, 11, color=COLORS["muted"]).grid(
+                row=i, column=0, sticky="w", padx=(14, 8), pady=4)
+            var = tk.DoubleVar(value=0.0)
+            slider = self._slider(self.adv_frame, var, lo, hi, step,
+                                  lambda _v, k=key: self._show_adv_value(k))
+            slider.grid(row=i, column=1, sticky="ew", pady=4)
+            slider.bind("<ButtonRelease-1>", lambda _e: self._advanced_changed())
+            value = _label(self.adv_frame, "", 11)
+            value.grid(row=i, column=2, padx=(8, 14))
+            self.adv_vars[key], self.adv_values[key] = var, value
+        self.adv_frame.columnconfigure(1, weight=1)
+        self.adv_visible = False
 
     def _build_devices(self) -> None:
-        settings = tk.Frame(self.root, bg=COLORS["panel"])
-        settings.pack(fill="x", pady=(14, 0), padx=16)
+        card, _, _ = self._card("Audio")
         names = [s.name for s in winaudio.speakers()]
         self.listen_var = tk.StringVar(value=self._match(names, self.cfg["listen"]))
         self.capture_var = tk.StringVar(value=self._match(names, self.cfg["capture"]))
-        self._combo(settings, "Listen on", self.listen_var, names, 0)
-        self._combo(settings, "Capture via (muted)", self.capture_var, names, 1)
-        settings.columnconfigure(1, weight=1)
-
-    def _build_latency(self, pad: dict) -> None:
-        self.delay_label, self.adv_button = self._section(
-            "Latency", pad, self._toggle_advanced, "Advanced ▸")
-        self.preset_row = tk.Frame(self.root, bg=COLORS["bg"])
-        self.preset_row.pack(fill="x", **pad)
-        self.preset_buttons: dict[str, tk.Button] = {}
-
-        self.adv_frame = tk.Frame(self.root, bg=COLORS["panel"])
-        self.adv_vars = {}
-        for i, (key, label, lo, hi, step) in enumerate(ADVANCED):
-            tk.Label(self.adv_frame, text=label, font=("Segoe UI", 9), bg=COLORS["panel"],
-                     fg=COLORS["muted"]).grid(row=i, column=0, sticky="w", padx=10, pady=2)
-            var = tk.DoubleVar(value=0.0)
-            scale = self._scale(self.adv_frame, var, lo, hi, step)
-            scale.grid(row=i, column=1, sticky="ew", padx=(0, 10))
-            scale.bind("<ButtonRelease-1>", lambda _e: self._advanced_changed())
-            self.adv_vars[key] = var
-        self.adv_visible = False
+        grid = ctk.CTkFrame(card, fg_color="transparent")
+        grid.pack(fill="x", padx=14, pady=(0, 12))
+        grid.columnconfigure(1, weight=1)
+        for row, (label, var) in enumerate((("Listen on", self.listen_var),
+                                            ("Capture via (muted)", self.capture_var))):
+            _label(grid, label, 11, color=COLORS["muted"]).grid(row=row, column=0, sticky="w",
+                                                               padx=(0, 10), pady=4)
+            menu = ctk.CTkOptionMenu(grid, variable=var, values=names, dynamic_resizing=False,
+                                     fg_color=COLORS["off"], button_color=COLORS["off"],
+                                     button_hover_color=COLORS["card_hi"],
+                                     font=ctk.CTkFont(FONT, 11),
+                                     command=lambda _v: self._devices_changed())
+            menu.grid(row=row, column=1, sticky="ew", pady=4)
+            self.combos.append(menu)
 
     @staticmethod
-    def _scale(parent, var, lo, hi, step) -> tk.Scale:
-        return tk.Scale(parent, variable=var, from_=lo, to=hi, resolution=step,
-                        orient="horizontal", length=220, showvalue=True, bd=0,
-                        highlightthickness=0, bg=COLORS["panel"], fg=COLORS["text"],
-                        troughcolor=COLORS["off"], font=("Segoe UI", 8))
-
-    def _combo(self, parent, label: str, var: tk.StringVar, values: list[str], row: int) -> None:
-        tk.Label(parent, text=label, font=("Segoe UI", 9), bg=COLORS["panel"],
-                 fg=COLORS["muted"]).grid(row=row, column=0, sticky="w", padx=10, pady=6)
-        box = ttk.Combobox(parent, textvariable=var, values=values, state="readonly", width=30)
-        box.grid(row=row, column=1, sticky="ew", padx=(0, 10), pady=6)
-        self.combos.append(box)
-        box.bind("<<ComboboxSelected>>", lambda _e: self._devices_changed())
+    def _slider(parent, var, lo, hi, step, command) -> ctk.CTkSlider:
+        return ctk.CTkSlider(parent, variable=var, from_=lo, to=hi,
+                             number_of_steps=max(1, round((hi - lo) / step)), command=command,
+                             progress_color=COLORS["filter"], button_color=COLORS["text"],
+                             button_hover_color=COLORS["filter"], fg_color=COLORS["off"])
 
     @staticmethod
     def _match(names: list[str], fragment: str) -> str:
         return next((n for n in names if fragment.lower() in n.lower()), names[0] if names else "")
 
     def _toggle_mixer(self) -> None:
-        # The mixer sits under the mode buttons row.
-        if self.mixer_visible:
-            self.mixer_frame.pack_forget()
-            self.mixer_button.configure(text="Mixer ▸")
-        else:
-            self.mixer_frame.pack(fill="x", padx=16, pady=(6, 0),
-                                  after=self.mix_buttons[DEFAULT_MODE].master)
-            self.mixer_button.configure(text="Mixer ▾")
         self.mixer_visible = not self.mixer_visible
+        if self.mixer_visible:
+            self.mixer_frame.pack(fill="x", padx=14, pady=(0, 12), after=self.mix_grid)
+        else:
+            self.mixer_frame.pack_forget()
 
     def _toggle_advanced(self) -> None:
-        if self.adv_visible:
-            self.adv_frame.pack_forget()
-            self.adv_button.configure(text="Advanced ▸")
-        else:
-            self.adv_frame.pack(fill="x", padx=16, pady=(6, 0), after=self.preset_row)
-            self.adv_button.configure(text="Advanced ▾")
         self.adv_visible = not self.adv_visible
+        if self.adv_visible:
+            self.adv_frame.pack(fill="x", pady=(0, 12), after=self.preset_row)
+        else:
+            self.adv_frame.pack_forget()
+
+    def _show_adv_value(self, key: str) -> None:
+        v = self.adv_vars[key].get()
+        self.adv_values[key].configure(text=f"{v:.1f} s" if key == "window_s" else f"{v * 1000:.0f} ms")
+
+    def _show_doctor(self) -> None:
+        win = ctk.CTkToplevel(self.root, fg_color=COLORS["bg"])
+        win.title("VoiceOnly · System check")
+        win.geometry("760x520")
+        box = ctk.CTkTextbox(win, font=ctk.CTkFont("Consolas", 12), fg_color=COLORS["card"],
+                             wrap="word")
+        box.pack(fill="both", expand=True, padx=14, pady=14)
+        box.insert("1.0", "Checking…")
+        win.after(50, lambda: (box.delete("1.0", "end"), box.insert("1.0", report()),
+                               box.configure(state="disabled")))
+        win.transient(self.root)
+        win.focus()
 
     # ---------- state -> widgets ----------
 
@@ -300,6 +380,16 @@ class App:
         ready = self.separator is not None and self.loading_key is None
         self.btn_filter.configure(text=self._mix_label())
         _paint(self.btn_filter, self.mode == "filter", COLORS["filter"], enabled=ready)
+        if self.loading_key or not ready:
+            pill, fg, color = "Loading", COLORS["off"], COLORS["muted"]
+        elif self.mode == "filter":
+            pill, fg, color = "Filtering", COLORS["filter_dark"], COLORS["filter"]
+        else:
+            pill, fg, color = "Ready", COLORS["off"], COLORS["text"]
+        self.pill.configure(text=pill, fg_color=fg, text_color=color)
+        if self.mode != "filter":
+            for label in self.stat_labels.values():
+                label.configure(text="—", text_color=COLORS["text"])
 
     def _refresh_keep(self) -> None:
         stems = self._stems()
@@ -307,27 +397,48 @@ class App:
             _paint(b, self.cfg["mix"] == key, COLORS["filter"], enabled=available(key, stems))
         unavailable = [MODES[k].label for k in MODES if not available(k, stems)]
         self.keep_note.configure(
-            text=f"{', '.join(unavailable)}: use Cinematic" if unavailable else "")
+            text=f"{' & '.join(unavailable)}: needs Cinematic" if unavailable else "")
         # One slider per stem of the current model.
         for child in self.mixer_frame.winfo_children():
             child.destroy()
         self.mixer_vars = {}
+        self.mixer_frame.columnconfigure(1, weight=1)
         for i, (stem, gain) in enumerate(self._gains().items()):
-            tk.Label(self.mixer_frame, text=stem.capitalize(), font=("Segoe UI", 9),
-                     bg=COLORS["panel"], fg=COLORS["muted"]).grid(
-                row=i, column=0, sticky="w", padx=10, pady=2)
+            _label(self.mixer_frame, stem.capitalize(), 11, color=COLORS["muted"]).grid(
+                row=i, column=0, sticky="w", padx=(0, 10), pady=4)
             var = tk.DoubleVar(value=round(gain * 100))
-            scale = self._scale(self.mixer_frame, var, 0, 100, 5)
-            scale.grid(row=i, column=1, sticky="ew", padx=(0, 10))
-            scale.bind("<ButtonRelease-1>", lambda _e: self._mixer_changed())
+            value = _label(self.mixer_frame, f"{round(gain * 100)}%", 11)
+            slider = self._slider(self.mixer_frame, var, 0, 100, 5,
+                                  lambda v, lbl=value: lbl.configure(text=f"{round(v)}%"))
+            slider.grid(row=i, column=1, sticky="ew", pady=4)
+            slider.bind("<ButtonRelease-1>", lambda _e: self._mixer_changed())
+            value.grid(row=i, column=2, padx=(8, 0))
             self.mixer_vars[stem] = var
 
     def _refresh_model(self) -> None:
-        key = self.loading_key or self.cfg["model"]
-        self.model_var.set(next(label for k, label, _ in MODEL_CHOICES if k == key))
-        desc = next(d for k, _, d in MODEL_CHOICES if k == key)
-        self.model_desc.configure(text=desc)
+        selected = self.loading_key or self.cfg["model"]
+        self.model_var.set(selected)
         self.model_note.configure(text="loading…" if self.loading_key else "")
+        for key, w in self.model_cards.items():
+            active = key == selected
+            w["box"].configure(border_color=COLORS["filter"] if active else COLORS["card_hi"])
+            b = self.bench.get(key, {})
+            live = b.get("live", {}).get("balanced") or next(iter(b.get("live", {}).values()), {})
+            voice = live.get("voice") or b.get("offline", {}).get("voice")
+            w["quality"].set(min(1.0, max(0.0, (voice or 0) / 25)))
+            w["speed"].set(min(1.0, max(0.0, (live.get("headroom") or 0) / 6)))
+            if live:
+                # Measured real-time delay (engine + device) when available.
+                rt = b.get("realtime", {}).get("balanced", {})
+                delay = rt.get("delay_s", live["engine_delay_s"])
+                w["facts"].configure(text=(
+                    f"Voice {voice:.1f} dB  ·  {delay:.2f} s delay  ·  "
+                    f"{live['step_ms']:.0f} ms/step  ·  {live['vram_mb'] / 1024:.1f} GB"
+                    f"  ·  {b.get('params_m', 0):.1f} M params"))
+            else:
+                w["facts"].configure(text="Not benchmarked yet (scripts/model_benchmark.py)")
+            w["badge"].configure(text="loading…" if key == self.loading_key else
+                                 ("selected" if active else ""))
 
     def _refresh_latency(self) -> None:
         presets = presets_for(self.cfg["model"])
@@ -335,10 +446,10 @@ class App:
             for b in self.preset_buttons.values():
                 b.destroy()
             self.preset_buttons = {}
-            for key, preset in presets.items():
-                b = _button(self.preset_row, preset.label, lambda k=key: self.set_preset(k), 9,
-                            width=8)
-                b.pack(side="left", expand=True, fill="x", padx=2)
+            for i, (key, preset) in enumerate(presets.items()):
+                b = _chip_button(self.preset_row, preset.label, lambda k=key: self.set_preset(k))
+                b.grid(row=0, column=i, sticky="ew", padx=3)
+                self.preset_row.columnconfigure(i, weight=1, uniform="p")
                 self.preset_buttons[key] = b
         for key, b in self.preset_buttons.items():
             _paint(b, self.cfg["preset"] == key, COLORS["filter"])
@@ -348,6 +459,7 @@ class App:
         self.delay_label.configure(text=f"{name} · ~{delay:.2f} s + device")
         for key, var in self.adv_vars.items():
             var.set(t[key])
+            self._show_adv_value(key)
 
     def _timing(self) -> dict:
         """Current timing values: the custom set, or the selected preset's."""
@@ -359,7 +471,21 @@ class App:
                 "window_s": p.window_s, "crossfade_s": p.crossfade_s}
 
     def _set_status(self, text: str, error: bool = False) -> None:
-        self.status.configure(text=text, fg=COLORS["error"] if error else COLORS["muted"])
+        self.status.configure(text=text, text_color=COLORS["error"] if error else COLORS["muted"])
+        if error:
+            self.pill.configure(text="Error", fg_color="#3a1d22", text_color=COLORS["error"])
+
+    def _show_stats(self, engine: LiveEngine) -> None:
+        s = engine.stats
+        ms = list(s.step_ms)
+        gpu = sum(ms) / len(ms) if ms else 0.0
+        hop_ms = engine.proc.hop / engine.proc.sr * 1000
+        glitches = s.underruns + s.dropped_blocks + s.drift_drops
+        self.stat_labels["delay"].configure(text=f"{engine.latency_s:.2f} s")
+        self.stat_labels["gpu"].configure(
+            text=f"{gpu:.0f} ms", text_color=COLORS["warn"] if gpu > 0.7 * hop_ms else COLORS["text"])
+        self.stat_labels["glitches"].configure(
+            text=str(glitches), text_color=COLORS["warn"] if glitches else COLORS["text"])
 
     # ---------- user choices ----------
 
@@ -630,12 +756,9 @@ class App:
                 self._set_status("Ctrl+Alt+V is used by another app; use the buttons.",
                                  error=True)
         if self.mode == "filter" and self.engine is not None and self.engine.stats.steps:
-            s = self.engine.stats
-            ms = list(s.step_ms)
-            gpu = sum(ms) / len(ms) if ms else 0.0
-            glitches = s.underruns + s.dropped_blocks + s.drift_drops
-            self._set_status(f"{self._mix_label()} · delay ~{self.engine.latency_s:.2f} s"
-                             f" · GPU {gpu:.0f} ms/step · glitches {glitches}")
+            self._show_stats(self.engine)
+            self._set_status(f"{self._mix_label()}: filtering "
+                             f"{self.capture_var.get()} → {self.listen_var.get()}")
         self.root.after(100, self._poll)
 
     def quit(self) -> None:
@@ -663,10 +786,6 @@ def main() -> None:
     logging.basicConfig(filename=CONFIG_DIR / "voiceonly.log", level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # crisp text on scaled displays
-    except Exception:
-        pass
     App().run()
 
 

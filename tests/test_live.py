@@ -89,3 +89,47 @@ def test_engine_downmixes_for_a_mono_output_device():
     out = np.zeros((480, 1), np.float32)
     eng._on_output(out, 480, None, None)
     assert eng.stats.underruns == 0
+
+
+def _engine(**kw):
+    return LiveEngine(Gain(), LiveConfig(hop_s=0.1, lookahead_s=0.1, crossfade_s=0.0),
+                      jitter_s=0.1, **kw)
+
+
+def test_adaptive_buffer_shrinks_unused_slack():
+    eng = _engine()
+    start = eng.jitter_target
+    for _ in range(40):
+        eng._adapt_jitter(int(0.08 * 1000))  # buffer never below 80 ms before a block
+    # slack = 80 - 10 ms margin -> target drops by half of it
+    assert eng.jitter_target == pytest.approx(start - 0.5 * (80 - 10))
+
+
+def test_adaptive_buffer_grows_after_a_gap_and_respects_limits():
+    eng = _engine()
+    eng.jitter_target = 50.0
+    eng.gap_seen = True
+    eng._adapt_jitter(0)
+    assert eng.jitter_target == pytest.approx(50 * 1.5 + 10)
+    for _ in range(400):
+        eng._adapt_jitter(10_000)  # huge slack every time
+    assert eng.jitter_target == eng.min_jitter
+
+
+def test_fixed_buffer_when_adaptive_is_off():
+    eng = _engine(adaptive=False)
+    for _ in range(80):
+        eng._adapt_jitter(500)
+    assert eng.jitter_target == eng.jitter
+
+
+def test_silent_blocks_absorb_buffer_excess_quickly():
+    eng = _engine()
+    eng.jitter_target = 20.0           # frames at 1 kHz: want 20 ms of buffer
+    eng.trough_avg = 80.0              # currently 80 ms
+    quiet = np.zeros((100, 1), np.float32)
+    out = eng._rate_adjust(quiet, 80)
+    assert out.shape[0] == 100 - 50    # up to half the block removed at once
+    loud = np.full((100, 1), 0.5, np.float32)
+    eng.trough_avg = 80.0
+    assert eng._rate_adjust(loud, 80).shape[0] == 99  # speech: at most 1% per block

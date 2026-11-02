@@ -1,0 +1,727 @@
+{
+ "meta": {
+  "date": "2026-11-02",
+  "gpu": "NVIDIA GeForce RTX 4090",
+  "os": "Windows-11-10.0.26300-SP0",
+  "python": "3.13.18",
+  "torch": "2.11.0+cu128",
+  "items": [
+   "a_bg-5dB",
+   "b_bg+0dB",
+   "c_bg+3dB",
+   "d_bg+8dB"
+  ],
+  "realtime_note": "adaptive buffer + silence compression engine, 2 runs x 29 s per preset"
+ },
+ "models": {
+  "tiger": {
+   "name": "TIGER-DnR cinematic (voice / music / effects)",
+   "stems": [
+    "voice",
+    "music",
+    "effects"
+   ],
+   "license": "MIT (code), Apache-2.0 (weights card)",
+   "params_m": 4.22,
+   "load_s": 0.3,
+   "offline": {
+    "stoi": 0.9719622699472648,
+    "voice": 15.875010077091602,
+    "music": 13.295039418280593,
+    "voice_kept_db": -0.3361249149974952,
+    "background_db": -32.383522461638634,
+    "effects": 8.36652887824415,
+    "rtf": 0.3023607053837486
+   },
+   "live": {
+    "clean": {
+     "stoi": 0.9672043718206285,
+     "voice": 14.81899236330852,
+     "music": 13.126295155248068,
+     "voice_kept_db": -0.3753022089510862,
+     "background_db": -33.227692253310465,
+     "effects": 7.971753427738714,
+     "preset": "clean",
+     "engine_delay_s": 0.55,
+     "hop_ms": 200.0,
+     "step_ms": 105.9858817543404,
+     "step_ms_p99": 109.65957999949751,
+     "headroom": 1.823826062446313,
+     "vram_mb": 293
+    },
+    "balanced": {
+     "stoi": 0.9648428537485771,
+     "voice": 14.36816233139073,
+     "music": 13.062417926532662,
+     "voice_kept_db": -0.4202357926523679,
+     "background_db": -32.78571070463747,
+     "effects": 7.892286568581532,
+     "preset": "balanced",
+     "engine_delay_s": 0.4,
+     "hop_ms": 150.0,
+     "step_ms": 73.85601623039659,
+     "step_ms_p99": 76.1004100005448,
+     "headroom": 1.9710800506715556,
+     "vram_mb": 250
+    },
+    "fast": {
+     "stoi": 0.9633104448737286,
+     "voice": 13.656947976593626,
+     "music": 11.725952779703231,
+     "voice_kept_db": -0.4763485661996349,
+     "background_db": -31.17615374748199,
+     "effects": 7.3127083148716014,
+     "preset": "fast",
+     "engine_delay_s": 0.35,
+     "hop_ms": 100.0,
+     "step_ms": 44.465627556310146,
+     "step_ms_p99": 45.7421679993422,
+     "headroom": 2.186166602366509,
+     "vram_mb": 197
+    }
+   },
+   "realtime": {
+    "balanced": {
+     "preset": "balanced",
+     "runs": 2,
+     "glitches": 0,
+     "underruns": 0,
+     "dropped": 0,
+     "drift_drops": 0,
+     "delay_s": 0.342,
+     "buffer_ms": 18.7
+    },
+    "fast": {
+     "preset": "fast",
+     "runs": 2,
+     "glitches": 0,
+     "underruns": 0,
+     "dropped": 0,
+     "drift_drops": 0,
+     "delay_s": 0.288,
+     "buffer_ms": 15.0
+    }
+   }
+  },
+  "mrx": {
+   "name": "MRX cinematic (voice / music / effects)",
+   "stems": [
+    "voice",
+    "music",
+    "effects"
+   ],
+   "license": "MIT (MERL cocktail-fork)",
+   "params_m": 30.51,
+   "load_s": 0.3,
+   "offline": {
+    "effects": 7.46404120536395,
+    "voice": 10.955358884133737,
+    "music": 11.150990144890807,
+    "stoi": 0.9526434521681149,
+    "voice_kept_db": -0.867046899780646,
+    "background_db": -24.23084140304112,
+    "rtf": 0.0826052460495626
+   },
+   "live": {
+    "clean": {
+     "effects": 8.268259275074817,
+     "voice": 9.625195227925083,
+     "music": 11.617252266945615,
+     "stoi": 0.941465781414978,
+     "voice_kept_db": -1.2799706699424336,
+     "background_db": -22.617386417550044,
+     "preset": "clean",
+     "engine_delay_s": 0.45,
+     "hop_ms": 100.0,
+     "step_ms": 29.670944214132717,
+     "step_ms_p99": 33.511199999302335,
+     "headroom": 2.9840769653752144,
+     "vram_mb": 426
+    },
+    "balanced": {
+     "effects": 8.127875136449457,
+     "voice": 9.49985357061976,
+     "music": 11.496995117962836,
+     "stoi": 0.9382109772547081,
+     "voice_kept_db": -1.3232963349196496,
+     "background_db": -22.34041193007129,
+     "preset": "balanced",
+     "engine_delay_s": 0.35,
+     "hop_ms": 100.0,
+     "step_ms": 28.655442287758046,
+     "step_ms_p99": 29.88537600111158,
+     "headroom": 3.3461181815574452,
+     "vram_mb": 426
+    },
+    "fast": {
+     "effects": 7.9961709610942915,
+     "voice": 9.125372918949175,
+     "music": 11.02496759421149,
+     "stoi": 0.9315441978754845,
+     "voice_kept_db": -1.4363228708071962,
+     "background_db": -21.688576728738283,
+     "preset": "fast",
+     "engine_delay_s": 0.27,
+     "hop_ms": 100.0,
+     "step_ms": 19.2710951304806,
+     "step_ms_p99": 20.781972000550013,
+     "headroom": 4.811862897195387,
+     "vram_mb": 454
+    }
+   }
+  },
+  "htdemucs": {
+   "name": "HTDemucs (vocals stem)",
+   "stems": [
+    "voice",
+    "drums",
+    "bass",
+    "other"
+   ],
+   "license": "MIT",
+   "params_m": 41.98,
+   "load_s": 0.7,
+   "offline": {
+    "stoi": 0.973782032928223,
+    "voice": 13.339642704926893,
+    "voice_kept_db": -0.6093032862142007,
+    "background_db": -45.41378895177526,
+    "rtf": 0.03117842587955987
+   },
+   "live": {
+    "clean": {
+     "stoi": 0.9709519419821364,
+     "voice": 11.862432171795984,
+     "voice_kept_db": -0.6853448056443578,
+     "background_db": -45.72733366289705,
+     "preset": "clean",
+     "engine_delay_s": 0.45,
+     "hop_ms": 100.0,
+     "step_ms": 21.948428842862654,
+     "step_ms_p99": 27.500642000268282,
+     "headroom": 3.6362787457479886,
+     "vram_mb": 556
+    },
+    "balanced": {
+     "stoi": 0.9729538748046749,
+     "voice": 10.063595437103785,
+     "voice_kept_db": -0.7037229595640786,
+     "background_db": -43.58823554729534,
+     "preset": "balanced",
+     "engine_delay_s": 0.25,
+     "hop_ms": 50.0,
+     "step_ms": 21.311075043037995,
+     "step_ms_p99": 22.489584999857477,
+     "headroom": 2.2232513405790666,
+     "vram_mb": 364
+    },
+    "fast": {
+     "stoi": 0.9721281106470654,
+     "voice": 11.654807220134302,
+     "voice_kept_db": -0.7049470484328819,
+     "background_db": -51.26123275416448,
+     "preset": "fast",
+     "engine_delay_s": 0.18,
+     "hop_ms": 50.0,
+     "step_ms": 16.67520956894993,
+     "step_ms_p99": 17.28983199920549,
+     "headroom": 2.8918730964128296,
+     "vram_mb": 691
+    },
+    "ultra": {
+     "stoi": 0.9680501713403549,
+     "voice": 11.38272663983217,
+     "voice_kept_db": -0.8161178974695902,
+     "background_db": -39.20003294487796,
+     "preset": "ultra",
+     "engine_delay_s": 0.12,
+     "hop_ms": 40.0,
+     "step_ms": 11.734446657472912,
+     "step_ms_p99": 12.318500000219501,
+     "headroom": 3.247148597579839,
+     "vram_mb": 825
+    }
+   },
+   "realtime": {
+    "balanced": {
+     "preset": "balanced",
+     "runs": 2,
+     "glitches": 0,
+     "underruns": 0,
+     "dropped": 0,
+     "drift_drops": 0,
+     "delay_s": 0.208,
+     "buffer_ms": 15.0
+    },
+    "fast": {
+     "preset": "fast",
+     "runs": 2,
+     "glitches": 0,
+     "underruns": 0,
+     "dropped": 0,
+     "drift_drops": 0,
+     "delay_s": 0.158,
+     "buffer_ms": 15.0
+    }
+   }
+  },
+  "htdemucs_ft": {
+   "name": "HTDemucs fine-tuned (vocals)",
+   "stems": [
+    "voice",
+    "drums",
+    "bass",
+    "other"
+   ],
+   "license": "MIT",
+   "params_m": 167.94,
+   "load_s": 1.7,
+   "offline": {
+    "voice": 11.923023561585886,
+    "background_db": -40.26133094048013,
+    "stoi": 0.9677640711928084,
+    "voice_kept_db": -0.5099715242977059,
+    "rtf": 0.08908362603892792
+   }
+  },
+  "mdx-vocft": {
+   "name": "MDX-Net Voc FT",
+   "stems": [
+    "voice",
+    "background"
+   ],
+   "license": "per-checkpoint, verify",
+   "params_m": null,
+   "load_s": 3.1,
+   "offline": {
+    "stoi": 0.9828871966685779,
+    "voice_kept_db": -4.083996590750587,
+    "background_db": -52.27944746592729,
+    "voice": 12.259192252342851,
+    "rtf": 0.17104538702283487
+   }
+  },
+  "mdx-kim2": {
+   "name": "MDX-Net Kim Vocal 2",
+   "stems": [
+    "voice",
+    "background"
+   ],
+   "license": "per-checkpoint, verify",
+   "params_m": null,
+   "load_s": 2.9,
+   "offline": {
+    "stoi": 0.9833074814120915,
+    "voice_kept_db": -3.970760104243542,
+    "voice": 12.262270413450608,
+    "background_db": -48.217417005864085,
+    "rtf": 0.1724684803095974
+   }
+  },
+  "mdx23c": {
+   "name": "MDX23C InstVoc HQ",
+   "stems": [
+    "voice",
+    "background"
+   ],
+   "license": "per-checkpoint, verify",
+   "params_m": null,
+   "load_s": 1.5,
+   "offline": {
+    "voice": 18.084832245087135,
+    "stoi": 0.9905686915217466,
+    "voice_kept_db": -0.335909482615067,
+    "background_db": -48.99735041325286,
+    "rtf": 0.46345386457585097
+   }
+  },
+  "bs-roformer": {
+   "name": "BS-RoFormer Viperx 1297",
+   "stems": [
+    "voice",
+    "background"
+   ],
+   "license": "per-checkpoint, verify",
+   "params_m": null,
+   "load_s": 1.9,
+   "offline": {
+    "voice": 25.268232703943703,
+    "stoi": 0.9926276424105719,
+    "voice_kept_db": -0.01018615758333357,
+    "background_db": -57.519802458347016,
+    "rtf": 0.9277252996641013
+   }
+  },
+  "bs-roformer-live": {
+   "name": "BS-RoFormer (in-process, fp16)",
+   "stems": [
+    "voice",
+    "background"
+   ],
+   "license": "per-checkpoint, verify",
+   "params_m": 159.76,
+   "load_s": 2.1,
+   "offline": {
+    "stoi": 0.992612601749491,
+    "voice": 25.26083637275478,
+    "background_db": -58.39751517834006,
+    "voice_kept_db": -0.005014617371535558,
+    "rtf": 0.047165627155318746
+   },
+   "live": {
+    "clean": {
+     "stoi": 0.9862856170083004,
+     "voice": 22.55240935167791,
+     "background_db": -51.30328789063461,
+     "voice_kept_db": -0.03907892580168669,
+     "preset": "clean",
+     "engine_delay_s": 0.5,
+     "hop_ms": 150.0,
+     "step_ms": 41.822427415143125,
+     "step_ms_p99": 42.606846000744554,
+     "headroom": 3.520560991474909,
+     "vram_mb": 811
+    },
+    "balanced": {
+     "stoi": 0.9848983922227592,
+     "voice": 21.448352336024904,
+     "background_db": -48.80540860542146,
+     "voice_kept_db": -0.054400219086768585,
+     "preset": "balanced",
+     "engine_delay_s": 0.35,
+     "hop_ms": 100.0,
+     "step_ms": 28.554339514724184,
+     "step_ms_p99": 29.22242800013919,
+     "headroom": 3.422029134592228,
+     "vram_mb": 785
+    },
+    "fast": {
+     "stoi": 0.9811616530084255,
+     "voice": 18.488382344645068,
+     "background_db": -48.06500025478032,
+     "voice_kept_db": -0.09636223694369805,
+     "preset": "fast",
+     "engine_delay_s": 0.27,
+     "hop_ms": 100.0,
+     "step_ms": 28.528543130457326,
+     "step_ms_p99": 29.22560200026055,
+     "headroom": 3.4216574905491592,
+     "vram_mb": 679
+    }
+   },
+   "realtime": {
+    "balanced": {
+     "preset": "balanced",
+     "runs": 2,
+     "glitches": 0,
+     "underruns": 0,
+     "dropped": 0,
+     "drift_drops": 0,
+     "delay_s": 0.296,
+     "buffer_ms": 22.2
+    },
+    "fast": {
+     "preset": "fast",
+     "runs": 2,
+     "glitches": 0,
+     "underruns": 0,
+     "dropped": 0,
+     "drift_drops": 0,
+     "delay_s": 0.216,
+     "buffer_ms": 22.6
+    }
+   }
+  },
+  "bs-roformer-resurrection-live": {
+   "name": "BS-RoFormer Resurrection (unwa)",
+   "stems": [
+    "voice",
+    "background"
+   ],
+   "license": "per-checkpoint, verify",
+   "params_m": 51.05,
+   "load_s": 8.4,
+   "offline": {
+    "voice_kept_db": -1.0804162775113078,
+    "stoi": 0.9683735721299507,
+    "voice": 11.894586112953098,
+    "background_db": -22.31894979949902,
+    "rtf": 0.032599245814835115
+   },
+   "live": {
+    "clean": {
+     "voice_kept_db": -1.123599861538004,
+     "stoi": 0.9340161809870396,
+     "voice": 5.156268311545147,
+     "background_db": -12.03371076462765,
+     "preset": "clean",
+     "engine_delay_s": 0.5,
+     "hop_ms": 150.0,
+     "step_ms": 26.873574934713027,
+     "step_ms_p99": 27.63832600085152,
+     "headroom": 5.427246208593769,
+     "vram_mb": 370
+    },
+    "balanced": {
+     "voice_kept_db": -1.08093103094498,
+     "stoi": 0.9040288124884016,
+     "voice": 3.069984440169008,
+     "background_db": -8.875906567736278,
+     "preset": "balanced",
+     "engine_delay_s": 0.35,
+     "hop_ms": 100.0,
+     "step_ms": 18.59536031194758,
+     "step_ms_p99": 19.273728001207928,
+     "headroom": 5.188409839224294,
+     "vram_mb": 349
+    },
+    "fast": {
+     "voice_kept_db": -1.1007120665448962,
+     "stoi": 0.896175371986999,
+     "voice": 2.7425784858882123,
+     "background_db": -8.485108295691147,
+     "preset": "fast",
+     "engine_delay_s": 0.27,
+     "hop_ms": 100.0,
+     "step_ms": 18.5605596521782,
+     "step_ms_p99": 19.248681999888504,
+     "headroom": 5.195160894682516,
+     "vram_mb": 258
+    }
+   }
+  },
+  "mel-roformer-live": {
+   "name": "Mel-RoFormer vocals (Kim)",
+   "stems": [
+    "voice",
+    "background"
+   ],
+   "license": "per-checkpoint, verify",
+   "params_m": 228.2,
+   "load_s": 2.5,
+   "offline": {
+    "background_db": -49.423937679659545,
+    "stoi": 0.9943790677957239,
+    "voice_kept_db": -0.09486470387197593,
+    "voice": 23.570858655559253,
+    "rtf": 0.0241292635609206
+   },
+   "live": {
+    "clean": {
+     "background_db": -42.67873840046898,
+     "stoi": 0.9915230263640273,
+     "voice_kept_db": -0.10991728273313764,
+     "voice": 21.835603476204305,
+     "preset": "clean",
+     "engine_delay_s": 0.5,
+     "hop_ms": 150.0,
+     "step_ms": 32.454461618828894,
+     "step_ms_p99": 48.003791999653934,
+     "headroom": 3.124753144524111,
+     "vram_mb": 1046
+    },
+    "balanced": {
+     "background_db": -42.04913924914307,
+     "stoi": 0.9903333652791605,
+     "voice_kept_db": -0.11255175014266178,
+     "voice": 21.71645554657419,
+     "preset": "balanced",
+     "engine_delay_s": 0.35,
+     "hop_ms": 100.0,
+     "step_ms": 29.48133431548313,
+     "step_ms_p99": 51.36641199955194,
+     "headroom": 1.9467974520173275,
+     "vram_mb": 1007
+    },
+    "fast": {
+     "background_db": -41.88053948717318,
+     "stoi": 0.9898150087379303,
+     "voice_kept_db": -0.11414603021194814,
+     "voice": 21.57163601624978,
+     "preset": "fast",
+     "engine_delay_s": 0.27,
+     "hop_ms": 100.0,
+     "step_ms": 28.851233217453977,
+     "step_ms_p99": 35.47273400094127,
+     "headroom": 2.819066610353363,
+     "vram_mb": 1007
+    }
+   }
+  },
+  "mel-roformer-big-live": {
+   "name": "Mel-RoFormer Big Beta 5e (unwa)",
+   "stems": [
+    "voice",
+    "background"
+   ],
+   "license": "per-checkpoint, verify",
+   "params_m": 369.85,
+   "load_s": 3.5,
+   "offline": {
+    "voice": 22.81150804398227,
+    "background_db": -41.36491241442742,
+    "stoi": 0.994390714701715,
+    "voice_kept_db": -0.07252093394332448,
+    "rtf": 0.025033822873381153
+   },
+   "live": {
+    "clean": {
+     "voice": 21.05744905557496,
+     "background_db": -38.86146838750365,
+     "stoi": 0.9910733237496552,
+     "voice_kept_db": -0.12069725192144624,
+     "preset": "clean",
+     "engine_delay_s": 0.5,
+     "hop_ms": 150.0,
+     "step_ms": 35.580768929494845,
+     "step_ms_p99": 63.69065000064438,
+     "headroom": 2.3551337597980613,
+     "vram_mb": 1586
+    },
+    "balanced": {
+     "voice": 20.691542061872333,
+     "background_db": -38.532283772993566,
+     "stoi": 0.9900212180201932,
+     "voice_kept_db": -0.1331440818671221,
+     "preset": "balanced",
+     "engine_delay_s": 0.35,
+     "hop_ms": 100.0,
+     "step_ms": 31.71068942807021,
+     "step_ms_p99": 54.12258400028804,
+     "headroom": 1.8476575323799727,
+     "vram_mb": 1548
+    },
+    "fast": {
+     "voice": 20.614928510950236,
+     "background_db": -38.565260190053614,
+     "stoi": 0.9892416681523888,
+     "voice_kept_db": -0.13197556228796872,
+     "preset": "fast",
+     "engine_delay_s": 0.27,
+     "hop_ms": 100.0,
+     "step_ms": 31.500613913114016,
+     "step_ms_p99": 39.21655399921291,
+     "headroom": 2.549943577449641,
+     "vram_mb": 1548
+    }
+   }
+  },
+  "mel-roformer-fv7b-live": {
+   "name": "Mel-RoFormer vocals FV7b (gabox)",
+   "stems": [
+    "voice",
+    "background"
+   ],
+   "license": "per-checkpoint, verify",
+   "params_m": 228.2,
+   "load_s": 33.6,
+   "offline": {
+    "stoi": 0.9962785000982977,
+    "voice_kept_db": 0.005234326197316849,
+    "voice": 23.256176135812396,
+    "background_db": -43.27217297483038,
+    "rtf": 0.02404791149834987
+   },
+   "live": {
+    "clean": {
+     "stoi": 0.9943516139397625,
+     "voice_kept_db": -0.007714591337051078,
+     "voice": 21.60377006110468,
+     "background_db": -39.50344229756303,
+     "preset": "clean",
+     "engine_delay_s": 0.5,
+     "hop_ms": 150.0,
+     "step_ms": 32.41254830292661,
+     "step_ms_p99": 42.62341000168818,
+     "headroom": 3.5191928565560326,
+     "vram_mb": 1046
+    },
+    "balanced": {
+     "stoi": 0.9930230128172531,
+     "voice_kept_db": -0.011183894270068398,
+     "voice": 21.519411676356118,
+     "background_db": -39.11706260223299,
+     "preset": "balanced",
+     "engine_delay_s": 0.35,
+     "hop_ms": 100.0,
+     "step_ms": 30.06965996526377,
+     "step_ms_p99": 60.20970799771021,
+     "headroom": 1.660861733523156,
+     "vram_mb": 1007
+    },
+    "fast": {
+     "stoi": 0.9924439690511082,
+     "voice_kept_db": -0.011945013470172287,
+     "voice": 21.39988899557307,
+     "background_db": -38.95915981048786,
+     "preset": "fast",
+     "engine_delay_s": 0.27,
+     "hop_ms": 100.0,
+     "step_ms": 29.502176347773258,
+     "step_ms_p99": 49.021693998874916,
+     "headroom": 2.039913186237405,
+     "vram_mb": 1007
+    }
+   }
+  },
+  "mel-roformer-becruily-live": {
+   "name": "Mel-RoFormer vocals (becruily)",
+   "stems": [
+    "voice",
+    "background"
+   ],
+   "license": "per-checkpoint, verify",
+   "params_m": 228.2,
+   "load_s": 26.8,
+   "offline": {
+    "stoi": 0.995650480301433,
+    "voice": 23.17139936787326,
+    "voice_kept_db": -0.028089836699986097,
+    "background_db": -43.326715361192996,
+    "rtf": 0.024017610829663368
+   },
+   "live": {
+    "clean": {
+     "stoi": 0.9929696298973263,
+     "voice": 21.333968416115315,
+     "voice_kept_db": -0.03994723355010242,
+     "background_db": -38.932213429274945,
+     "preset": "clean",
+     "engine_delay_s": 0.5,
+     "hop_ms": 150.0,
+     "step_ms": 32.0804342036805,
+     "step_ms_p99": 40.58576200150133,
+     "headroom": 3.6958773866177816,
+     "vram_mb": 1046
+    },
+    "balanced": {
+     "stoi": 0.9910164689377885,
+     "voice": 20.373411908594306,
+     "voice_kept_db": -0.06397691881630037,
+     "background_db": -38.426551872534176,
+     "preset": "balanced",
+     "engine_delay_s": 0.35,
+     "hop_ms": 100.0,
+     "step_ms": 29.386265857947034,
+     "step_ms_p99": 36.41842800090676,
+     "headroom": 2.7458626165168405,
+     "vram_mb": 1007
+    },
+    "fast": {
+     "stoi": 0.9905649914797137,
+     "voice": 20.374967913001733,
+     "voice_kept_db": -0.061473378940287565,
+     "background_db": -38.14250934928562,
+     "preset": "fast",
+     "engine_delay_s": 0.27,
+     "hop_ms": 100.0,
+     "step_ms": 29.354055825938502,
+     "step_ms_p99": 43.926379997355944,
+     "headroom": 2.2765363320633134,
+     "vram_mb": 1007
+    }
+   }
+  }
+ },
+ "failed": {}
+}

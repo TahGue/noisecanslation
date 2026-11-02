@@ -209,6 +209,13 @@ def cmd_live_sim(args) -> int:
     return 0
 
 
+def cmd_doctor(args) -> int:
+    from .doctor import report
+
+    print(report())
+    return 0
+
+
 def cmd_synthetic(args) -> int:
     from .synthetic import write_set
 
@@ -237,6 +244,8 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--device", default="auto")
     b.add_argument("--seed", type=int, default=0)
     b.set_defaults(fn=cmd_bench)
+
+    sub.add_parser("doctor", help="check what this machine can run").set_defaults(fn=cmd_doctor)
 
     dv = sub.add_parser("devices", help="list audio devices")
     dv.add_argument("--all", action="store_true", help="include non-WASAPI devices")

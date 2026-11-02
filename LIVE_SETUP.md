@@ -13,11 +13,18 @@ don't listen to (WASAPI loopback) and plays the filtered result to the one you d
 
 Easiest: double-click `VoiceOnly.bat` and use the app.
 
-- **Normal / Voice only** buttons (or **Ctrl+Alt+V** from any app). The app switches
-  Windows' output for you and restores it when you go back to Normal or close it.
-- **Latency** presets: Clean, Balanced, Fast, Ultra (see below). Changes apply live.
-- **Advanced ▸** opens sliders for step, lookahead, safety buffer and model window
-  ("Custom" preset). The status line shows the delay and glitch count while running.
+- **Normal / filtered** buttons at the top (or **Ctrl+Alt+V** from any app). The app
+  switches Windows' output for you and restores it when you go back to Normal or close
+  it. The chips under them show the real delay, GPU time per step and glitches.
+- **Keep**: Voice only, Voice boost (background at 25%), No music, No effects, No voice.
+  *No music* / *No effects* need the Cinematic model (the only one that separates
+  effects from music). The **Mixer** switch shows one slider per stem for custom mixes;
+  changes are instant.
+- **Model**: Fast (HTDemucs), Cinematic (TIGER), Best voice (BS-RoFormer). Each card
+  shows its benchmarked quality, delay, GPU time and memory (`docs/benchmarks.md`).
+- **Latency**: presets per model (Clean / Balanced / Fast ...). The **Advanced** switch
+  shows sliders for step, lookahead, safety buffer and model window ("Custom").
+- **System check** (bottom) shows what this PC supports (`docs/compatibility.md`).
 
 Command line instead: set Windows output to **Realtek Digital Output**, then
 `uv run voiceonly live -i loopback:Realtek -o WH-1000XM4 --preset fast`.

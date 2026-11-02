@@ -93,6 +93,16 @@ MODEL_PRESETS: dict[str, dict[str, Preset]] = {
         "fast": Preset("Fast", hop_s=0.10, lookahead_s=0.05, crossfade_s=0.02,
                        window_s=1.5, jitter_s=0.10),
     },
+    # TIGER-DnR (3 networks in parallel, CUDA graph, fp32): 98 / 68 / 42 ms per
+    # 3 / 2 / 1 s window. Live-sim voice SI-SDR 15.7 / 15.4 / 13.7 dB (offline 15.9).
+    "tiger": {
+        "clean": Preset("Clean", hop_s=0.20, lookahead_s=0.20, crossfade_s=0.05,
+                        window_s=3.0, jitter_s=0.10),
+        "balanced": Preset("Balanced", hop_s=0.15, lookahead_s=0.10, crossfade_s=0.05,
+                           window_s=2.0, jitter_s=0.10),
+        "fast": Preset("Fast", hop_s=0.10, lookahead_s=0.10, crossfade_s=0.05,
+                       window_s=1.0, jitter_s=0.10),
+    },
     # MRX: ~43 ms per 3 s window (fp16 + CUDA graph). Timing-based; per-preset quality
     # not measured yet. Steps stay at 0.1 s so the LSTMs keep up.
     "mrx": {
@@ -107,8 +117,15 @@ MODEL_PRESETS: dict[str, dict[str, Preset]] = {
 
 
 def presets_for(model_key: str) -> dict[str, Preset]:
-    """Latency presets suited to a model (HTDemucs-tuned ones by default)."""
-    return MODEL_PRESETS.get(model_key, PRESETS)
+    """Latency presets suited to a model (HTDemucs-tuned ones by default).
+
+    Other in-process RoFormers share BS-RoFormer's timings: same family and size class.
+    """
+    if model_key in MODEL_PRESETS:
+        return MODEL_PRESETS[model_key]
+    if model_key.endswith("-live") and "roformer" in model_key:
+        return MODEL_PRESETS["bs-roformer-live"]
+    return PRESETS
 
 
 class StreamingProcessor:
@@ -192,7 +209,8 @@ def simulate(audio: np.ndarray, separator: SpeechSeparator, config: LiveConfig) 
 @dataclass
 class Stats:
     steps: int = 0
-    underruns: int = 0
+    underruns: int = 0  # playback callbacks that ran short (one gap spans several)
+    underrun_events: int = 0  # gaps: runs of consecutive short callbacks
     dropped_blocks: int = 0
     drift_drops: int = 0
     step_ms: collections.deque = field(default_factory=lambda: collections.deque(maxlen=50))
@@ -203,7 +221,8 @@ class LiveEngine:
 
     def __init__(self, separator: SpeechSeparator, config: LiveConfig,
                  input_device=None, output_device=None, jitter_s: float = 0.1,
-                 device_latency: str | float = "low", gains=None) -> None:
+                 device_latency: str | float = "low", gains=None,
+                 adaptive: bool = True) -> None:
         self.proc = StreamingProcessor(separator, config, stems=True)
         # One gain per stem (separator.info.stems); changeable while running.
         # Default: voice only.
@@ -214,6 +233,15 @@ class LiveEngine:
         self.config = config
         self.input_device, self.output_device = input_device, output_device
         self.jitter = int(round(jitter_s * self.proc.sr))
+        # Adaptive safety buffer: the target the rate controller holds the buffer at.
+        # Starts at the preset value, shrinks while the buffer never runs low, and
+        # grows quickly after an audible gap (see _adapt_jitter).
+        self.adaptive = adaptive
+        self.jitter_target = float(self.jitter)
+        self.min_jitter = int(0.015 * self.proc.sr)
+        self.max_jitter = max(self.jitter * 3, int(0.3 * self.proc.sr))
+        self.troughs: collections.deque = collections.deque(maxlen=40)
+        self.gap_seen = False
         # PortAudio buffer request ("low"/"high"/seconds); the granted value is read back.
         self.device_latency = device_latency
         self.output_latency_s = 0.0
@@ -227,6 +255,8 @@ class LiveEngine:
         self.out_frames = 0
         self.out_lock = threading.Lock()
         self.started_output = False
+        self.starved = False  # last playback callback ran short
+        self.draining = False  # input has ended; running dry is expected, not a glitch
         self.running = False
         self.error: Exception | None = None
         self.recorded: list[np.ndarray] | None = None  # set to [] to keep a copy of output
@@ -234,7 +264,10 @@ class LiveEngine:
     @property
     def latency_s(self) -> float:
         """Expected delay from capture to the speaker, excluding Bluetooth/codec delay."""
-        engine = (self.proc.hop + self.proc.delay_frames + self.jitter) / self.proc.sr
+        # The safety buffer as actually measured (level just before each block lands),
+        # once running; the adaptive target is where it is heading.
+        buffer = getattr(self, "trough_avg", self.jitter_target)
+        engine = (self.proc.hop + self.proc.delay_frames + buffer) / self.proc.sr
         return engine + self.output_latency_s
 
     def _on_input(self, indata, frames, time_info, status) -> None:
@@ -269,7 +302,14 @@ class LiveEngine:
             self.out_frames -= filled
             if filled < frames:
                 outdata[filled:].fill(0)
-                self.stats.underruns += 1
+                if not self.draining:
+                    self.stats.underruns += 1
+                    if not self.starved:
+                        self.stats.underrun_events += 1
+                        self.gap_seen = True
+                self.starved = True
+            else:
+                self.starved = False
 
     def _worker(self) -> None:
         hop = self.proc.hop
@@ -297,13 +337,18 @@ class LiveEngine:
                 if y.shape[1] > self.out_channels:  # e.g. stereo model -> mono headset
                     y = y.mean(axis=1, keepdims=True)
                 with self.out_lock:
-                    trough = self.out_frames if self.started_output else self.jitter
+                    started = self.started_output
+                    trough = self.out_frames if started else self.jitter
+                if started:
+                    self._adapt_jitter(trough)
                 y = self._rate_adjust(y, trough)
                 with self.out_lock:
                     self.out.append(y)
                     self.out_frames += y.shape[0]
                     # Last resort if the delay ran far away (e.g. a long system stall).
-                    excess = self.out_frames - (self.jitter + 3 * hop)
+                    # Small steps must not trigger it: allow 0.25 s of excess at least.
+                    slack = max(3 * hop, int(0.25 * self.proc.sr))
+                    excess = self.out_frames - (int(self.jitter_target) + slack)
                     if excess > 0:
                         self._drop_oldest(excess)
                         self.stats.drift_drops += 1
@@ -317,14 +362,46 @@ class LiveEngine:
         """
         self.trough_avg = 0.8 * getattr(self, "trough_avg", float(trough)) + 0.2 * trough
         n = y.shape[0]
-        limit = n // 100
-        delta = int(np.clip(round((self.trough_avg - self.jitter) * 0.05), -limit, limit))
+        error = self.trough_avg - self.jitter_target
+        if float(np.sqrt(np.mean(y ** 2))) < 0.003 and abs(error) > 0.005 * self.proc.sr:
+            # Near-silent block (common between phrases in voice-only output): change
+            # its length by up to half at once. Inaudible, unlike a faster speed change,
+            # and it lets the buffer reach a new target in seconds instead of minutes.
+            limit = n // 2
+            delta = int(np.clip(round(error), -limit, limit))
+            self.trough_avg -= delta  # the buffer will be this much shorter/longer
+        else:
+            limit = n // 100
+            delta = int(np.clip(round(error * 0.05), -limit, limit))
         if delta == 0:
             return y
         m = n - delta
         pos = np.linspace(0, n - 1, m)
         return np.stack([np.interp(pos, np.arange(n), y[:, c]) for c in range(y.shape[1])],
                         axis=1).astype(np.float32)
+
+    def _adapt_jitter(self, trough: int) -> None:
+        """Move the safety-buffer target toward what this machine actually needs.
+
+        `trough` is the buffer level just before a block lands. If, over the last 40
+        blocks, it never fell below `margin`, that slack is unused delay: lower the
+        target by half of it. After an audible gap, grow the target 1.5x at once.
+        """
+        if not self.adaptive:
+            return
+        if self.gap_seen:
+            self.gap_seen = False
+            self.jitter_target = min(self.max_jitter,
+                                     self.jitter_target * 1.5 + 0.01 * self.proc.sr)
+            self.troughs.clear()
+            return
+        self.troughs.append(trough)
+        if len(self.troughs) == self.troughs.maxlen:
+            margin = 0.010 * self.proc.sr
+            slack = min(self.troughs) - margin
+            if slack > 0:
+                self.jitter_target = max(self.min_jitter, self.jitter_target - 0.5 * slack)
+            self.troughs.clear()
 
     def set_gains(self, gains) -> None:
         """Set stem gains: a sequence in stem order, or a {stem_name: gain} dict."""
@@ -360,6 +437,7 @@ class LiveEngine:
 
     def _feed_file(self, audio: np.ndarray, block: int) -> None:
         """Stand-in for a capture device: deliver `audio` in real time."""
+        pro_audio_thread()
         start = time.perf_counter()
         sent = 0
         while self.running and sent < audio.shape[0]:
@@ -372,6 +450,7 @@ class LiveEngine:
             if wait > 0:
                 time.sleep(wait)
         # Flush the lookahead so the end of the file is heard, then stop.
+        self.draining = True
         tail = self.proc.delay_frames + self.proc.hop + self.jitter
         self._on_input(np.zeros((tail, audio.shape[1]), np.float32), tail, None, None)
         time.sleep(tail / self.proc.sr + 0.3)
@@ -390,6 +469,9 @@ class LiveEngine:
             import ctypes
 
             ctypes.windll.ole32.CoInitializeEx(None, 0)
+            # Default Windows timer resolution is ~15.6 ms; sleeps and waits in the
+            # audio path then wake late. 1 ms while the engine runs.
+            ctypes.windll.winmm.timeBeginPeriod(1)
         self.running = True
         self.warm_up()  # builds CUDA graphs; can take a few seconds
         if not self.running:
@@ -431,6 +513,10 @@ class LiveEngine:
         finally:
             self.running = False
             worker.join(timeout=2)
+            if os.name == "nt":
+                import ctypes
+
+                ctypes.windll.winmm.timeEndPeriod(1)
         if self.error:
             raise RuntimeError(f"capture failed: {self.error}") from self.error
 
@@ -459,6 +545,7 @@ class LoopbackCapture:
         warnings.filterwarnings("ignore", message="data discontinuity in recording")
         # soundcard talks to WASAPI through COM, which must be set up per thread.
         ctypes.windll.ole32.CoInitializeEx(None, 0)
+        pro_audio_thread()
         sr, ch = engine.proc.sr, engine.proc.channels
         block = sr // 100
         try:
@@ -473,6 +560,22 @@ class LoopbackCapture:
         except Exception as e:  # surface capture failures instead of hanging silently
             engine.error = e
             engine.running = False
+
+
+def pro_audio_thread() -> None:
+    """Register the calling thread with Windows MMCSS as "Pro Audio" (no-op elsewhere).
+
+    MMCSS boosts the thread's scheduling priority so capture keeps its cadence when
+    the CPU is busy (e.g. while the GPU worker runs Python code)."""
+    if os.name != "nt":
+        return
+    import ctypes
+
+    try:
+        task_index = ctypes.c_ulong(0)
+        ctypes.windll.avrt.AvSetMmThreadCharacteristicsW("Pro Audio", ctypes.byref(task_index))
+    except (OSError, AttributeError):
+        pass  # MMCSS unavailable: run at normal priority
 
 
 def _is_wasapi(device) -> bool:

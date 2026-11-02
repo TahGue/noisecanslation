@@ -255,28 +255,41 @@ class RoFormerDirect(_TorchSeparator):
         self.half = half
 
     def initialize(self) -> None:
+        import inspect
         import os
+        import tempfile as _tempfile
 
         import yaml
+        from audio_separator.separator import Separator
         from audio_separator.separator.uvr_lib_v5.roformer.bs_roformer import BSRoformer
+        from audio_separator.separator.uvr_lib_v5.roformer.mel_band_roformer import (
+            MelBandRoformer,
+        )
+
+        from ..audio_io import ensure_ffmpeg_on_path
 
         super().initialize()
+        ensure_ffmpeg_on_path()  # audio-separator checks for ffmpeg on construction
         cache = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "VoiceOnly" / "models"
-        ckpt = cache / self.info.version
-        cfg_path = ckpt.with_suffix(".yaml")
-        if not ckpt.exists() or not cfg_path.exists():
-            # Let audio-separator fetch the checkpoint and config into the shared cache.
-            fetch = AudioSeparatorModel(checkpoint=self.info.version)
-            fetch.initialize()
-            fetch.close()
+        with _tempfile.TemporaryDirectory() as tmp:
+            # Downloads checkpoint + config if missing; the config name does not always
+            # follow the checkpoint name (e.g. config_melband_roformer_big_beta5e.yaml).
+            fetch = Separator(output_dir=tmp, model_file_dir=str(cache), log_level=30)
+            _, _, _, model_path, yaml_name = fetch.download_model_files(self.info.version)
         # The YAML stores band sizes as Python tuples, which safe_load rejects.
         loader = type("TupleLoader", (yaml.SafeLoader,), {})
         loader.add_constructor("tag:yaml.org,2002:python/tuple",
                                lambda ld, node: tuple(ld.construct_sequence(node)))
-        cfg = yaml.load(cfg_path.read_text(encoding="utf-8"), Loader=loader)
-        model = BSRoformer(**cfg["model"])
-        model.load_state_dict(self.torch.load(ckpt, map_location="cpu", weights_only=True))
+        cfg = yaml.load((cache / yaml_name).read_text(encoding="utf-8"), Loader=loader)["model"]
+        cls = MelBandRoformer if "num_bands" in cfg else BSRoformer
+        accepted = inspect.signature(cls.__init__).parameters
+        model = cls(**{k: v for k, v in cfg.items() if k in accepted})
+        state = self.torch.load(model_path, map_location="cpu", weights_only=True)
+        if isinstance(state, dict) and "state_dict" in state:
+            state = state["state_dict"]
+        model.load_state_dict(state)
         self.model = model.to(self.device).eval()
+        self.is_bs = cls is BSRoformer
         self.torch.backends.cuda.matmul.allow_tf32 = True
 
     LIVE_MAX_SECONDS = 4.0  # chunks up to this length use the CUDA-graph runner
@@ -303,17 +316,41 @@ class RoFormerDirect(_TorchSeparator):
 
     def separate(self, chunk: np.ndarray) -> np.ndarray:
         torch = self.torch
-        if (self.device.startswith("cuda")
+        if (self.is_bs and self.device.startswith("cuda")
                 and chunk.shape[0] <= self.LIVE_MAX_SECONDS * self.info.sample_rate):
-            return self._runner(chunk.shape[0])(chunk)  # live path
+            return self._runner(chunk.shape[0])(chunk)  # live path (BS-RoFormer only)
         x = torch.from_numpy(np.ascontiguousarray(chunk.T))[None].to(self.device)
         with torch.inference_mode(), torch.autocast(
                 "cuda", dtype=torch.float16, enabled=self.half and self.device.startswith("cuda")):
             y = self.model(x)[0].float()
+        if y.ndim == 3:  # (stems, channels, frames) for multi-stem checkpoints: voice first
+            y = y[0]
         n = chunk.shape[0]
         if y.shape[-1] < n:
             y = torch.nn.functional.pad(y, (0, n - y.shape[-1]))
         return y[:, :n].cpu().numpy().T
+
+
+def _roformer_live(key: str, name: str, checkpoint: str) -> type[RoFormerDirect]:
+    info = ModelInfo(**{**RoFormerDirect.info.to_dict(), "key": key, "name": name,
+                        "version": checkpoint})
+    return type(f"RoFormerDirect_{key.replace('-', '_')}", (RoFormerDirect,), {"info": info})
+
+
+# In-process (live-capable) RoFormers. Viperx 1297 / Kim / Big Beta 5e are the long-
+# standing references; Resurrection (unwa), FV7b (gabox) and becruily are 2025 releases.
+ROFORMER_LIVE_MODELS = [
+    _roformer_live("bs-roformer-resurrection-live", "BS-RoFormer Resurrection (unwa)",
+                   "bs_roformer_vocals_resurrection_unwa.ckpt"),
+    _roformer_live("mel-roformer-live", "Mel-RoFormer vocals (Kim)",
+                   "vocals_mel_band_roformer.ckpt"),
+    _roformer_live("mel-roformer-big-live", "Mel-RoFormer Big Beta 5e (unwa)",
+                   "melband_roformer_big_beta5e.ckpt"),
+    _roformer_live("mel-roformer-fv7b-live", "Mel-RoFormer vocals FV7b (gabox)",
+                   "mel_band_roformer_vocals_fv7b_gabox.ckpt"),
+    _roformer_live("mel-roformer-becruily-live", "Mel-RoFormer vocals (becruily)",
+                   "mel_band_roformer_vocals_becruily.ckpt"),
+]
 
 
 class MRXCinematic(_TorchSeparator):
@@ -393,6 +430,81 @@ class MRXCinematic(_TorchSeparator):
         with torch.inference_mode():
             y = self.model(x)  # (3, channels, frames)
         return (y[self.ORDER].float().cpu().numpy() / g).transpose(0, 2, 1)
+
+
+class TigerCinematic(_TorchSeparator):
+    """TIGER-DnR (Tsinghua, MIT): dialogue / music / effects from film soundtracks.
+
+    Three small TIGER networks (4.2 M parameters in total), trained on Divide and
+    Remaster. Beats MRX on every stem in our tests (voice 15.9 vs 10.9 dB). It is a
+    mono model: stereo input is downmixed and the stems are returned on both channels.
+    Code vendored under separators/vendor (MIT); weights from JusperLee/TIGER-DnR.
+    """
+
+    REPO = "JusperLee/TIGER-DnR"
+    LIVE_MAX_SECONDS = 6.0  # chunks up to this length use the CUDA-graph runner
+
+    info = ModelInfo(
+        key="tiger", name="TIGER-DnR cinematic (voice / music / effects)",
+        version="JusperLee/TIGER-DnR", sample_rate=44100, channels=2, chunk_seconds=36.0,
+        overlap_seconds=4.0, license="MIT (code), Apache-2.0 (weights card)",
+        requires=["safetensors"], live_window_seconds=2.0, live_min_hop_seconds=0.15,
+        stems=["voice", "music", "effects"],
+    )
+
+    def __init__(self, device: str = "auto", half: bool = False) -> None:
+        super().__init__(device)
+        self.half = half  # fp16 is slower for TIGER (its many norms run in fp32)
+        self.runners: dict[int, object] = {}
+
+    def initialize(self) -> None:
+        import json
+        import os
+
+        from huggingface_hub import hf_hub_download
+        from safetensors.torch import load_file
+
+        from .vendor.tiger_dnr import TIGERDNR
+
+        super().initialize()
+        cache = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "VoiceOnly" / "models" / "tiger"
+        files = {}
+        for name in ("config.json", "model.safetensors"):
+            local = cache / name
+            files[name] = local if local.exists() else Path(
+                hf_hub_download(self.REPO, name, local_dir=cache))
+        cfg = json.loads(files["config.json"].read_text(encoding="utf-8"))
+        args = TIGERDNR.__init__.__code__.co_varnames
+        model = TIGERDNR(**{k: v for k, v in cfg.items() if k in args})
+        model.load_state_dict(load_file(files["model.safetensors"]))
+        self.model = model.to(self.device).eval()
+
+    def _runner(self, frames: int):
+        if frames not in self.runners:
+            from .fast_tiger import TigerGraphRunner
+
+            self.runners[frames] = TigerGraphRunner(self.model, frames, 1, self.half)
+        return self.runners[frames]
+
+    def close(self) -> None:
+        self.runners = {}
+        super().close()
+
+    def separate(self, chunk: np.ndarray) -> np.ndarray:
+        return self.separate_stems(chunk)[0]
+
+    def separate_stems(self, chunk: np.ndarray) -> np.ndarray:
+        mono = chunk.mean(axis=1, keepdims=True).astype(np.float32)
+        if (self.device.startswith("cuda")
+                and chunk.shape[0] <= self.LIVE_MAX_SECONDS * self.info.sample_rate):
+            stems = self._runner(chunk.shape[0])(mono)  # (3, frames, 1)
+        else:
+            torch = self.torch
+            x = torch.from_numpy(mono.T.copy()).to(self.device)[None]  # (1, 1, frames)
+            with torch.inference_mode():
+                voice, effects, music = self.model(x)  # TIGER's own 12 s / 4 s chunking
+            stems = torch.stack([voice, music, effects]).reshape(3, -1, 1).cpu().numpy()
+        return np.repeat(stems, chunk.shape[1], axis=2)
 
 
 def _audiosep(key: str, name: str, checkpoint: str) -> type[AudioSeparatorModel]:

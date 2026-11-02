@@ -7,6 +7,7 @@ import importlib.util
 from .base import ModelInfo, SeparationError, SpeechSeparator
 from .models import (
     AUDIOSEP_MODELS,
+    ROFORMER_LIVE_MODELS,
     AudioSeparatorModel,
     DeepFilterNet,
     HTDemucs,
@@ -14,12 +15,13 @@ from .models import (
     MRXCinematic,
     Passthrough,
     RoFormerDirect,
+    TigerCinematic,
 )
 
 REGISTRY: dict[str, type[SpeechSeparator]] = {
     cls.info.key: cls
     for cls in (Passthrough, HTDemucs, HTDemucsFT, AudioSeparatorModel, *AUDIOSEP_MODELS,
-                RoFormerDirect, MRXCinematic, DeepFilterNet)
+                RoFormerDirect, *ROFORMER_LIVE_MODELS, MRXCinematic, TigerCinematic, DeepFilterNet)
 }
 
 _IMPORT_NAMES = {"demucs": "demucs", "deepfilternet": "df", "audio-separator": "audio_separator"}

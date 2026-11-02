@@ -35,8 +35,8 @@ uv run voiceonly make-synthetic data/synthetic --items 5
 uv run voiceonly bench data/synthetic -m passthrough -m htdemucs -o runs/first
 ```
 
-Models (`uv run voiceonly models` lists them with install status): `htdemucs`
-(default, also live), `htdemucs_ft`, `bs-roformer`, `mel-roformer`,
+Models (`uv run voiceonly models` lists them; `uv run voiceonly doctor` checks this PC): `htdemucs`
+(default, also live), `tiger` and `bs-roformer-live` (live), `mrx`, `htdemucs_ft`, `bs-roformer`, `mel-roformer`,
 `mel-roformer-big`, `mdx23c`, `mdx-kim2`, `mdx-vocft`, `deepfilternet` and
 `passthrough`. Community checkpoints often have no clear license: fine to
 evaluate locally, check before redistributing.
