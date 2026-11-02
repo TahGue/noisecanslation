@@ -34,6 +34,32 @@ class SourceInfo:
         return asdict(self)
 
 
+def ensure_ffmpeg_on_path() -> str | None:
+    """Make `ffmpeg` callable by name, using imageio-ffmpeg's bundled binary if needed.
+
+    Some libraries (audio-separator) shell out to plain `ffmpeg`. The bundled binary
+    has a versioned file name, so a copy named ffmpeg.exe goes in a cache folder that
+    is put on PATH for this process. Returns the ffmpeg path, or None if unavailable.
+    """
+    import os
+
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    try:
+        import imageio_ffmpeg
+    except ImportError:
+        return None
+    src = Path(imageio_ffmpeg.get_ffmpeg_exe())
+    shim_dir = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "VoiceOnly" / "bin"
+    shim = shim_dir / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
+    if not shim.exists() or shim.stat().st_size != src.stat().st_size:
+        shim_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, shim)
+    os.environ["PATH"] = f"{shim_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+    return str(shim)
+
+
 def ffmpeg_available() -> bool:
     return shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
 

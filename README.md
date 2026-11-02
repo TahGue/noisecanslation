@@ -1,6 +1,11 @@
-# VoiceOnly — bake-off (v0.1)
+# VoiceOnly
 
-**Live mode (filter your PC's audio to voices only): see [LIVE_SETUP.md](LIVE_SETUP.md).**
+Hear only the voices from your PC: a Windows app that removes music and sound
+effects from whatever is playing, live, on an NVIDIA GPU. Plus an offline
+pipeline and benchmark for choosing the separation model.
+
+**Run the app:** double-click `VoiceOnly.bat`. Setup, presets and tuning:
+[LIVE_SETUP.md](LIVE_SETUP.md).
 
 Offline speech extraction pipeline plus a benchmark to pick the model VoiceOnly
 is built around. See `docs/decisions/` for the choices behind it.
@@ -10,8 +15,13 @@ is built around. See `docs/decisions/` for the choices behind it.
 ```powershell
 uv sync                         # core: numpy, scipy, soundfile
 uv sync --extra demucs          # add HTDemucs (pulls PyTorch)
-uv sync --extra roformer --extra metrics
+uv sync --inexact --extra roformer --extra metrics   # RoFormer / MDX models, STOI
 ```
+
+The `roformer` extra brings `audio-separator`, a bundled ffmpeg (`imageio-ffmpeg`) and
+`onnxruntime-gpu` 1.23, which reuses PyTorch's CUDA 12.8 libraries for ONNX models.
+Keep the venv on a short path (`UV_PROJECT_ENVIRONMENT`, as `VoiceOnly.bat` does) to
+avoid Windows' 260-character limit for CUDA DLLs.
 
 For CUDA PyTorch on Windows, install the CUDA wheel per pytorch.org if the
 default wheel reports `torch.cuda.is_available() == False`.
@@ -25,12 +35,24 @@ uv run voiceonly make-synthetic data/synthetic --items 5
 uv run voiceonly bench data/synthetic -m passthrough -m htdemucs -o runs/first
 ```
 
+Models (`uv run voiceonly models` lists them with install status): `htdemucs`
+(default, also live), `htdemucs_ft`, `bs-roformer`, `mel-roformer`,
+`mel-roformer-big`, `mdx23c`, `mdx-kim2`, `mdx-vocft`, `deepfilternet` and
+`passthrough`. Community checkpoints often have no clear license: fine to
+evaluate locally, check before redistributing.
+
+Scripts:
+- `scripts/make_testset.py` builds a test set from TTS voice clips + synthetic
+  backgrounds at -5 to +8 dB background level.
+- `scripts/live_e2e.py --preset fast` measures real delay and glitches on your devices.
+
 `separate` writes `speech.wav`, `speech.flac`, `metadata.json`, `benchmark.json`.
 
 `bench` expects one folder per item containing `mix.wav` (or `mixture.wav`) and
 `speech.wav`, plus optional `music.wav`/`sfx.wav`/`background.wav` — the DnR
 layout. It writes `results.json`, `results.csv`, a per-model summary and a
-`listening/` folder of blinded samples with a separate `key.json`.
+`listening/` folder of blinded samples with a separate `key.json`. A model that
+fails is reported and skipped; results are saved after each model.
 
 ## Metrics
 

@@ -58,39 +58,57 @@ def run(dataset: str | Path, model_keys: list[str], out_dir: str | Path,
         raise SystemExit(f"No items in {dataset}: need folders with mix.wav and speech.wav")
     log(f"{len(items)} items, models: {', '.join(model_keys)}")
 
-    rows, models_meta = [], {}
+    rows, models_meta, failed = [], {}, {}
     for key in model_keys:
-        sep = separators.create(key, device=device)
-        t0 = time.perf_counter()
-        sep.initialize()
-        load_s = time.perf_counter() - t0
         try:
-            for item in items:
-                mix, speech, bg, sr = load_item(item)
-                est, timings = extract(mix, sr, sep)
-                audio_io.save(out_dir / "outputs" / key / f"{item['id'].replace('/', '__')}.wav",
-                              est, sr)
-                row = {"model": key, "item": item["id"], **metrics.evaluate(est, mix, speech, bg, sr),
-                       "rtf": timings["rtf"], "qc_ok": quality.check(est, mix.shape[0], sr, mix)["ok"]}
-                rows.append(row)
-                log(f"  {key:14s} {item['id']:24s} SI-SDR {row['si_sdr']:6.2f} dB  "
-                    f"leak {row['leakage_db']:6.1f} dB  speech {row['speech_gain_db']:5.1f} dB  "
-                    f"RTF {row['rtf']:.3f}")
-            models_meta[key] = {**sep.info.to_dict(), "model_load_s": load_s, **sep.runtime_info()}
-        finally:
-            sep.close()
+            rows += _run_model(key, items, out_dir, device, models_meta, log)
+        except Exception as e:  # one broken model must not sink the whole comparison
+            failed[key] = f"{type(e).__name__}: {e}"
+            log(f"  {key:14s} FAILED: {failed[key]}")
+        _write_results(out_dir, dataset, models_meta, failed, rows)
 
-    summary = summarize(rows)
+    if not rows:
+        raise SystemExit("every model failed; see results.json")
+    done = [k for k in model_keys if k in models_meta]
+    export_listening(out_dir, items, done, seed)
+    return {"summary": summarize(rows), "rows": rows, "failed": failed}
+
+
+def _run_model(key, items, out_dir, device, models_meta, log) -> list[dict]:
+    rows = []
+    sep = separators.create(key, device=device)
+    t0 = time.perf_counter()
+    sep.initialize()
+    load_s = time.perf_counter() - t0
+    try:
+        for item in items:
+            mix, speech, bg, sr = load_item(item)
+            est, timings = extract(mix, sr, sep)
+            audio_io.save(out_dir / "outputs" / key / f"{item['id'].replace('/', '__')}.wav",
+                          est, sr)
+            row = {"model": key, "item": item["id"], **metrics.evaluate(est, mix, speech, bg, sr),
+                   "rtf": timings["rtf"], "qc_ok": quality.check(est, mix.shape[0], sr, mix)["ok"]}
+            rows.append(row)
+            log(f"  {key:14s} {item['id']:24s} SI-SDR {row['si_sdr']:6.2f} dB  "
+                f"leak {row['leakage_db']:6.1f} dB  speech {row['speech_gain_db']:5.1f} dB  "
+                f"RTF {row['rtf']:.3f}")
+        models_meta[key] = {**sep.info.to_dict(), "model_load_s": load_s, **sep.runtime_info()}
+    finally:
+        sep.close()
+    return rows
+
+
+def _write_results(out_dir, dataset, models_meta, failed, rows) -> None:
+    """Rewritten after every model so an interrupted run keeps what finished."""
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "results.json").write_text(json.dumps(
-        {"dataset": str(dataset), "models": models_meta, "summary": summary, "rows": rows},
-        indent=2))
-    with open(out_dir / "results.csv", "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(rows[0]))
-        w.writeheader()
-        w.writerows(rows)
-    export_listening(out_dir, items, model_keys, seed)
-    return {"summary": summary, "rows": rows}
+        {"dataset": str(dataset), "models": models_meta, "failed": failed,
+         "summary": summarize(rows), "rows": rows}, indent=2))
+    if rows:
+        with open(out_dir / "results.csv", "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(rows[0]))
+            w.writeheader()
+            w.writerows(rows)
 
 
 def summarize(rows: list[dict]) -> dict:

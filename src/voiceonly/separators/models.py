@@ -157,16 +157,17 @@ class DeepFilterNet(_TorchSeparator):
         return y.cpu().numpy().T
 
 
-class RoFormer(SpeechSeparator):
-    """BS/Mel-RoFormer through the audio-separator package (file based API).
+class AudioSeparatorModel(SpeechSeparator):
+    """Any vocals-capable checkpoint run through the audio-separator package (file API).
 
-    The checkpoint is configurable; check each checkpoint's license before use.
+    Subclasses below pin one checkpoint each. Community checkpoints often have no
+    clear license: fine for local evaluation, check before redistributing.
     """
 
-    DEFAULT_CHECKPOINT = "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
+    CHECKPOINT = "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
 
     info = ModelInfo(
-        key="roformer", name="BS-RoFormer (audio-separator)", version=DEFAULT_CHECKPOINT,
+        key="roformer", name="BS-RoFormer Viperx 1297", version=CHECKPOINT,
         sample_rate=44100, channels=2, chunk_seconds=120.0, overlap_seconds=4.0,
         license="per-checkpoint, verify", requires=["audio-separator"],
     )
@@ -177,10 +178,24 @@ class RoFormer(SpeechSeparator):
             self.info = ModelInfo(**{**self.info.to_dict(), "version": checkpoint})
 
     def initialize(self) -> None:
+        import os
+
         from audio_separator.separator import Separator
 
-        self.tmp = tempfile.TemporaryDirectory(prefix="voiceonly-roformer-")
-        self.sep = Separator(output_dir=self.tmp.name, output_format="WAV")
+        from ..audio_io import ensure_ffmpeg_on_path
+
+        if ensure_ffmpeg_on_path() is None:
+            raise SeparationError("audio-separator needs ffmpeg: uv sync --extra roformer")
+        # ONNX models run on onnxruntime-gpu (CUDA 12), which reuses the CUDA/cuDNN DLLs
+        # loaded by the cu128 PyTorch wheel; import torch first so they are found.
+        import onnxruntime
+        import torch  # noqa: F401
+
+        onnxruntime.preload_dlls()
+        cache =Path(os.environ.get("LOCALAPPDATA", Path.home())) / "VoiceOnly" / "models"
+        self.tmp = tempfile.TemporaryDirectory(prefix="voiceonly-audiosep-")
+        self.sep = Separator(output_dir=self.tmp.name, output_format="WAV",
+                             model_file_dir=str(cache), log_level=30)
         self.sep.load_model(model_filename=self.info.version)
 
     def separate(self, chunk: np.ndarray) -> np.ndarray:
@@ -197,7 +212,25 @@ class RoFormer(SpeechSeparator):
             p.unlink(missing_ok=True)
         if sr != self.info.sample_rate:
             raise SeparationError(f"checkpoint output is {sr} Hz")
+        if y.shape[0] < chunk.shape[0]:
+            y = np.pad(y, ((0, chunk.shape[0] - y.shape[0]), (0, 0)))
         return y[: chunk.shape[0]]
 
     def close(self) -> None:
         self.tmp.cleanup()
+
+
+def _audiosep(key: str, name: str, checkpoint: str) -> type[AudioSeparatorModel]:
+    info = ModelInfo(**{**AudioSeparatorModel.info.to_dict(), "key": key, "name": name,
+                        "version": checkpoint})
+    return type(f"AudioSep_{key.replace('-', '_')}", (AudioSeparatorModel,), {"info": info})
+
+
+AUDIOSEP_MODELS = [
+    _audiosep("bs-roformer", "BS-RoFormer Viperx 1297", "model_bs_roformer_ep_317_sdr_12.9755.ckpt"),
+    _audiosep("mel-roformer", "Mel-RoFormer vocals (Kim)", "vocals_mel_band_roformer.ckpt"),
+    _audiosep("mel-roformer-big", "Mel-RoFormer Big Beta 5e", "melband_roformer_big_beta5e.ckpt"),
+    _audiosep("mdx23c", "MDX23C InstVoc HQ", "MDX23C-8KFFT-InstVoc_HQ.ckpt"),
+    _audiosep("mdx-kim2", "MDX-Net Kim Vocal 2", "Kim_Vocal_2.onnx"),
+    _audiosep("mdx-vocft", "MDX-Net Voc FT", "UVR-MDX-NET-Voc_FT.onnx"),
+]

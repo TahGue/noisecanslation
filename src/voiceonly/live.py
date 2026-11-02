@@ -45,6 +45,41 @@ class LiveConfig:
         return self.hop_s + self.lookahead_s + self.crossfade_s
 
 
+@dataclass(frozen=True)
+class Preset:
+    """A named latency/quality trade-off. Delay ~= hop + lookahead + crossfade + jitter."""
+
+    label: str
+    hop_s: float
+    lookahead_s: float
+    crossfade_s: float
+    window_s: float
+    jitter_s: float
+
+    def config(self) -> LiveConfig:
+        return LiveConfig(hop_s=self.hop_s, lookahead_s=self.lookahead_s,
+                          window_s=self.window_s, crossfade_s=self.crossfade_s)
+
+    @property
+    def delay_s(self) -> float:
+        return self.hop_s + self.lookahead_s + self.crossfade_s + self.jitter_s
+
+
+# Window lengths and lookaheads were chosen from live-sim sweeps on an RTX 4090
+# (docs/decisions/0005-latency-presets.md has the measurements).
+PRESETS: dict[str, Preset] = {
+    "clean": Preset("Clean", hop_s=0.10, lookahead_s=0.20, crossfade_s=0.05, window_s=4.0,
+                    jitter_s=0.10),
+    "balanced": Preset("Balanced", hop_s=0.05, lookahead_s=0.10, crossfade_s=0.02,
+                       window_s=4.0, jitter_s=0.08),
+    "fast": Preset("Fast", hop_s=0.05, lookahead_s=0.05, crossfade_s=0.02, window_s=3.0,
+                   jitter_s=0.06),
+    "ultra": Preset("Ultra", hop_s=0.04, lookahead_s=0.02, crossfade_s=0.01, window_s=2.0,
+                    jitter_s=0.05),
+}
+DEFAULT_PRESET = "clean"
+
+
 class StreamingProcessor:
     """Feed `hop` frames in, get `hop` filtered frames out, delayed by lookahead + crossfade."""
 
@@ -123,11 +158,15 @@ class LiveEngine:
     """Device input -> worker thread -> device output, with bounded queues."""
 
     def __init__(self, separator: SpeechSeparator, config: LiveConfig,
-                 input_device=None, output_device=None, jitter_s: float = 0.1) -> None:
+                 input_device=None, output_device=None, jitter_s: float = 0.1,
+                 device_latency: str | float = "low") -> None:
         self.proc = StreamingProcessor(separator, config)
         self.config = config
         self.input_device, self.output_device = input_device, output_device
         self.jitter = int(round(jitter_s * self.proc.sr))
+        # PortAudio buffer request ("low"/"high"/seconds); the granted value is read back.
+        self.device_latency = device_latency
+        self.output_latency_s = 0.0
         self.stats = Stats()
         # Up to 4 hops of unprocessed input; beyond that the GPU is not keeping up.
         self.inq: queue.Queue[np.ndarray] = queue.Queue(maxsize=64)
@@ -143,7 +182,9 @@ class LiveEngine:
 
     @property
     def latency_s(self) -> float:
-        return (self.proc.hop + self.proc.delay_frames + self.jitter) / self.proc.sr
+        """Expected delay from capture to the speaker, excluding Bluetooth/codec delay."""
+        engine = (self.proc.hop + self.proc.delay_frames + self.jitter) / self.proc.sr
+        return engine + self.output_latency_s
 
     def _on_input(self, indata, frames, time_info, status) -> None:
         try:
@@ -283,9 +324,11 @@ class LiveEngine:
         worker.start()
         try:
             with contextlib.ExitStack() as stack:
-                stack.enter_context(sd.OutputStream(
+                out_stream = stack.enter_context(sd.OutputStream(
                     device=self.output_device, samplerate=sr, channels=ch, dtype="float32",
-                    callback=self._on_output, extra_settings=extra_out))
+                    callback=self._on_output, extra_settings=extra_out,
+                    latency=self.device_latency))
+                self.output_latency_s = float(out_stream.latency)
                 if isinstance(self.input_device, LoopbackCapture):
                     threading.Thread(target=self.input_device.run, args=(self,),
                                      daemon=True).start()
@@ -294,7 +337,8 @@ class LiveEngine:
                              if _is_wasapi(self.input_device) else None)
                     stack.enter_context(sd.InputStream(
                         device=self.input_device, samplerate=sr, channels=ch, dtype="float32",
-                        callback=self._on_input, extra_settings=extra))
+                        callback=self._on_input, extra_settings=extra,
+                        latency=self.device_latency))
                 else:
                     threading.Thread(target=self._feed_file, args=(input_audio, sr // 100),
                                      daemon=True).start()

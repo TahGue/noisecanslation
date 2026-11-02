@@ -11,10 +11,16 @@ don't listen to (WASAPI loopback) and plays the filtered result to the one you d
 
 ## Each time you want voice only
 
-1. Windows sound settings (Win+Ctrl+V, or the speaker icon) → output **Realtek Digital Output**.
-2. Double-click `start-voiceonly.bat`.
-3. In the window: **Enter** toggles VOICE ONLY / BYPASS, **Ctrl+C** stops.
-4. When done, switch Windows output back to your headphones.
+Easiest: double-click `VoiceOnly.bat` and use the app.
+
+- **Normal / Voice only** buttons (or **Ctrl+Alt+V** from any app). The app switches
+  Windows' output for you and restores it when you go back to Normal or close it.
+- **Latency** presets: Clean, Balanced, Fast, Ultra (see below). Changes apply live.
+- **Advanced ▸** opens sliders for step, lookahead, safety buffer and model window
+  ("Custom" preset). The status line shows the delay and glitch count while running.
+
+Command line instead: set Windows output to **Realtek Digital Output**, then
+`uv run voiceonly live -i loopback:Realtek -o WH-1000XM4 --preset fast`.
 
 Requirements for the "sink" output (`SINK=` in the .bat):
 - You must not hear it: nothing connected to Realtek Digital Output, or if you use
@@ -24,30 +30,38 @@ Requirements for the "sink" output (`SINK=` in the .bat):
 
 `uv run voiceonly devices` lists outputs and loopback sources.
 
-## Measured on this PC (2026-11-02)
+## Latency presets
 
-App → Realtek → VoiceOnly → WH-1000XM4, HTDemucs, 0.25 s steps, over 42 s:
+| Preset | Step | Lookahead | Window | Safety buffer | Engine delay | Voice quality* |
+|---|---|---|---|---|---|---|
+| Clean | 0.10 s | 0.20 s | 4 s | 0.10 s | ~0.45 s | best (SI-SDR 15.1 dB) |
+| Balanced | 0.05 s | 0.10 s | 4 s | 0.08 s | ~0.25 s | -1.5 dB |
+| Fast | 0.05 s | 0.05 s | 3 s | 0.06 s | ~0.18 s | -2 to -4 dB |
+| Ultra | 0.04 s | 0.02 s | 2 s | 0.05 s | ~0.12 s | -2 dB, more background at word starts |
 
-| | |
-|---|---|
-| Underruns / dropped audio | 0 / 0 |
-| Delay, app to headphones | 0.89 s (+ Bluetooth's own ~0.2 s) |
-| GPU time per 250 ms step | ~80 ms (p99 86 ms) |
-| Tonal balance vs offline result | within 1 dB |
-| Background during voice pauses | 23 dB below speech (unfiltered mix: 5 dB) |
+\*Live-sim on the TTS test clip (HTDemucs, fp16, CUDA graph). Add the device buffer
+(shown in the app) and Bluetooth (~0.2 s for WH-1000XM4). Smaller steps mean more GPU
+steps per second: if the status line shows glitches climbing, use a slower preset or
+raise the safety buffer. Close other GPU-heavy apps for Fast/Ultra.
 
-Video lip-sync will be ~1 s behind; VLC (`J`/`K`) and MPC-HC can shift audio sync.
-
-## Tuning
-
-| Setting | Default | Effect |
-|---|---|---|
-| `--hop` | 0.25 s | Smaller = less delay, more GPU work |
-| `--lookahead` | 0.3 s | More = cleaner speech onsets, more delay |
-| `--jitter` | 0.2 s | Safety buffer against stalls; raise if `underruns` climb |
+Command-line flags (`--hop`, `--lookahead`, `--window`, `--crossfade`, `--jitter`)
+override the chosen `--preset`.
 
 The buffer self-corrects by changing playback speed by at most 1% (inaudible),
 so stalls and clock differences don't cut audio.
+
+Video lip-sync will lag by the total delay; VLC (`J`/`K`) and MPC-HC can shift audio sync.
+
+## Measure it yourself
+
+`scripts/live_e2e.py` plays a test clip into the capture output, runs live mode and
+records your headphones, then reports real delay, glitches and background level:
+
+```
+uv run python scripts/live_e2e.py --preset fast
+```
+
+Close the VoiceOnly app first (both would use the same outputs).
 
 ## Test without other apps
 

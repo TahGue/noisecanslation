@@ -5,10 +5,19 @@ from __future__ import annotations
 import importlib.util
 
 from .base import ModelInfo, SeparationError, SpeechSeparator
-from .models import DeepFilterNet, HTDemucs, HTDemucsFT, Passthrough, RoFormer
+from .models import (
+    AUDIOSEP_MODELS,
+    AudioSeparatorModel,
+    DeepFilterNet,
+    HTDemucs,
+    HTDemucsFT,
+    Passthrough,
+)
 
 REGISTRY: dict[str, type[SpeechSeparator]] = {
-    cls.info.key: cls for cls in (Passthrough, HTDemucs, HTDemucsFT, RoFormer, DeepFilterNet)
+    cls.info.key: cls
+    for cls in (Passthrough, HTDemucs, HTDemucsFT, AudioSeparatorModel, *AUDIOSEP_MODELS,
+                DeepFilterNet)
 }
 
 _IMPORT_NAMES = {"demucs": "demucs", "deepfilternet": "df", "audio-separator": "audio_separator"}
@@ -22,7 +31,8 @@ def missing_requirements(key: str) -> list[str]:
 def install_hint(key: str) -> str:
     if key == "deepfilternet":
         return "It pins numpy<2; use a separate Python 3.11 env (docs/decisions/0004)."
-    extra = {"htdemucs": "demucs", "htdemucs_ft": "demucs"}.get(key, key)
+    extra = ("roformer" if "audio-separator" in REGISTRY[key].info.requires
+             else {"htdemucs": "demucs", "htdemucs_ft": "demucs"}.get(key, key))
     return f"Install with: uv sync --extra {extra}"
 
 

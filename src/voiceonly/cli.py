@@ -45,15 +45,28 @@ def cmd_bench(args) -> int:
         stoi = f"{s['stoi']:.3f}" if s["stoi"] is not None else "  n/a"
         print(f"{key:14s} {s['si_sdr']:8.2f} {s['si_sdr_i']:8.2f} {s['speech_gain_db']:8.2f} "
               f"{s['leakage_db']:8.2f} {stoi:>6s} {s['rtf']:7.3f}  {s['qc_failures']}")
+    for key, err in result.get("failed", {}).items():
+        print(f"{key:14s} FAILED: {err}")
     print(f"\nResults in {args.out}; blinded samples in {args.out}/listening (answers: key.json)")
     return 0
 
 
 def _live_config(args):
-    from .live import LiveConfig
+    """The chosen preset, with any explicitly given timing flag overriding it."""
+    from .live import PRESETS, LiveConfig
 
-    return LiveConfig(hop_s=args.hop, lookahead_s=args.lookahead, window_s=args.window,
-                      crossfade_s=args.crossfade)
+    p = PRESETS[args.preset]
+    pick = lambda flag, default: default if flag is None else flag  # noqa: E731
+    return LiveConfig(hop_s=pick(args.hop, p.hop_s),
+                      lookahead_s=pick(args.lookahead, p.lookahead_s),
+                      window_s=pick(args.window, p.window_s),
+                      crossfade_s=pick(args.crossfade, p.crossfade_s))
+
+
+def _jitter(args) -> float:
+    from .live import PRESETS
+
+    return PRESETS[args.preset].jitter_s if args.jitter is None else args.jitter
 
 
 def cmd_devices(args) -> int:
@@ -100,7 +113,7 @@ def cmd_live(args) -> int:
             f"playback device is '{out_name}', which would feed VoiceOnly back into itself. "
             "Pass your speakers/headphones with -o (see: voiceonly devices).")
     sep = separators.create(args.model, device=args.device)
-    engine = LiveEngine(sep, _live_config(args), in_dev, out_dev, jitter_s=args.jitter)
+    engine = LiveEngine(sep, _live_config(args), in_dev, out_dev, jitter_s=_jitter(args))
     print(f"Loading {sep.info.name}...", file=sys.stderr)
     sep.initialize()
     print(f"Live: {args.input_file or args.input or 'default input'} -> {args.output or 'default output'}, "
@@ -216,17 +229,21 @@ def main(argv: list[str] | None = None) -> int:
     dv.set_defaults(fn=cmd_devices)
 
     def live_args(sp) -> None:
+        from .live import DEFAULT_PRESET, PRESETS
+
         sp.add_argument("-m", "--model", default="htdemucs")
         sp.add_argument("--device", default="auto")
-        sp.add_argument("--hop", type=float, default=0.1, help="seconds processed per step")
-        sp.add_argument("--lookahead", type=float, default=0.2, help="future audio the model hears")
+        sp.add_argument("--preset", choices=list(PRESETS), default=DEFAULT_PRESET,
+                        help="latency/quality trade-off; the flags below override it")
+        sp.add_argument("--hop", type=float, default=None, help="seconds processed per step")
+        sp.add_argument("--lookahead", type=float, default=None, help="future audio the model hears")
         sp.add_argument("--window", type=float, default=None, help="model window in seconds")
-        sp.add_argument("--crossfade", type=float, default=0.05)
+        sp.add_argument("--crossfade", type=float, default=None)
+        sp.add_argument("--jitter", type=float, default=None, help="safety buffer in seconds")
 
     lv = sub.add_parser("live", help="filter live audio to voices only")
     lv.add_argument("-i", "--input", default="CABLE Output", help="capture device (name or #)")
     lv.add_argument("-o", "--output", default=None, help="playback device (name or #)")
-    lv.add_argument("--jitter", type=float, default=0.1, help="safety buffer in seconds")
     lv.add_argument("--input-file", help="play a file through the live engine instead of a device")
     lv.add_argument("--gain-db", type=float, default=-12.0, help="level of --input-file")
     lv.add_argument("--duration", type=float, default=None, help="stop after N seconds")

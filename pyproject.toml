@@ -14,7 +14,10 @@ dependencies = [
 [project.optional-dependencies]
 # Each candidate model is an optional extra so one broken install never blocks the others.
 demucs = ["torch", "torchaudio", "demucs>=4.0"]
-roformer = ["audio-separator[gpu]"]
+# onnxruntime-gpu 1.23 targets CUDA 12, so it can reuse the CUDA 12.8 + cuDNN 9 DLLs
+# that ship with the cu128 PyTorch wheel (CUDA 13 runtime wheels have no Windows build).
+roformer = ["audio-separator[gpu]", "onnxruntime-gpu>=1.22,<1.24", "audioread>=3.0.1",
+            "imageio-ffmpeg>=0.5"]
 metrics = ["pystoi"]
 
 [tool.uv.sources]
