@@ -1,0 +1,42 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Generated audio, datasets and benchmark runs (large, reproducible)
+data/
+output/
+runs/
+*.wav
+*.flac
+*.mp3
+
+# Model weights and checkpoints (downloaded at runtime; licenses vary)
+*.ckpt
+*.th
+*.pt
+*.pth
+*.onnx
+*.engine
+models/weights/
+
+# Logs
+*.log
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local Claude Code settings
+.claude/settings.local.json
