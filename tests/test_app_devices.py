@@ -43,7 +43,10 @@ def make_app(monkeypatch, tmp_path):
 
     yield factory
     for a in created:
-        a.root.destroy()
+        try:
+            a.root.destroy()
+        except tk.TclError:
+            pass  # the test closed it already
 
 
 def test_lost_headphones_fall_back_to_a_real_output(make_app):
@@ -113,3 +116,23 @@ def test_switching_model_resets_modes_it_cannot_do(make_app, monkeypatch):
     a.cfg["model"], a.cfg["mix"] = "tiger", "no_music"
     a.set_model("htdemucs")
     assert loaded == ["htdemucs"] and a.cfg["mix"] == "voice"
+
+
+def test_closing_restores_normal_mode_and_frees_the_model(make_app, monkeypatch):
+    a, _ = make_app()
+
+    class FakeModel:
+        closed = False
+
+        def close(self):
+            FakeModel.closed = True
+
+    a.separator = FakeModel()
+    a.mode = "filter"
+    modes = []
+    monkeypatch.setattr(a, "set_mode", lambda m: (modes.append(m), setattr(a, "mode", m)))
+    a.quit()
+    assert modes == ["normal"] and FakeModel.closed and a.separator is None
+    with pytest.raises(tk.TclError):
+        a.root.winfo_exists()  # window destroyed
+    a.quit()  # a second close (e.g. hotkey during shutdown) is harmless

@@ -762,11 +762,27 @@ class App:
         self.root.after(100, self._poll)
 
     def quit(self) -> None:
-        self.set_mode("normal")
+        """Close in order: sound back to normal, threads stopped, GPU memory freed."""
+        if getattr(self, "closing", False):
+            return
+        self.closing = True
+        self.root.withdraw()  # the window disappears at once; cleanup follows
+        try:
+            self.set_mode("normal")  # stops the engine and restores Windows' output
+        except Exception:
+            log.exception("restoring normal mode on close failed")
+        # Engines still warming up (CUDA-graph capture) get a moment to finish.
+        deadline = time.monotonic() + 3.0
+        for t in [*self.stopping, self.engine_thread]:
+            if t is not None and t.is_alive():
+                t.join(max(0.0, deadline - time.monotonic()))
         if getattr(self, "hotkey_thread_id", None):
             ctypes.windll.user32.PostThreadMessageW(self.hotkey_thread_id, 0x0012, 0, 0)
         if self.separator is not None:
-            self.separator.close()
+            with GPU_LOCK:
+                self.separator.close()  # weights, CUDA graphs, caches, cuBLAS workspaces
+            self.separator = None
+        log.info("closed cleanly")
         self.root.destroy()
 
     def run(self) -> None:
@@ -786,7 +802,37 @@ def main() -> None:
     logging.basicConfig(filename=CONFIG_DIR / "voiceonly.log", level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+    # The models run on the GPU; PyTorch would otherwise start one CPU worker per core
+    # (70+ threads) that spin and compete with the audio threads. Set before import.
+    for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+        os.environ.setdefault(var, "2")
+    if not _single_instance():
+        _focus_existing_window()
+        return
     App().run()
+    # Everything was released in App.quit(); end the process even if a library left
+    # a thread behind, so nothing keeps holding GPU memory after the window closed.
+    logging.shutdown()
+    os._exit(0)
+
+
+_INSTANCE_MUTEX = None
+
+
+def _single_instance() -> bool:
+    """True if this is the only VoiceOnly app; a second copy would fight over the GPU,
+    the hotkey and Windows' output routing."""
+    global _INSTANCE_MUTEX
+    _INSTANCE_MUTEX = ctypes.windll.kernel32.CreateMutexW(None, False, "Local\\VoiceOnlyApp")
+    return ctypes.windll.kernel32.GetLastError() != 183  # ERROR_ALREADY_EXISTS
+
+
+def _focus_existing_window() -> None:
+    user32 = ctypes.windll.user32
+    hwnd = user32.FindWindowW("TkTopLevel", "VoiceOnly")
+    if hwnd:
+        user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+        user32.SetForegroundWindow(hwnd)
 
 
 if __name__ == "__main__":

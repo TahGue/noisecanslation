@@ -42,3 +42,21 @@ def test_mrx_runner_matches_mrx_forward():
     with torch.inference_mode():
         ref = model(torch.from_numpy(x.T.copy()).cuda()).cpu().numpy().transpose(0, 2, 1)
     assert _rel(fast, ref) < 1e-4
+
+
+@pytest.mark.parametrize("key", ["htdemucs", "tiger"])
+def test_runner_cache_is_bounded_and_close_frees_gpu_memory(key):
+    from voiceonly.separators import create
+
+    base = torch.cuda.memory_allocated()
+    sep = create(key)
+    sep.initialize()
+    for seconds in (1.0, 1.5, 2.0, 2.5):  # four window lengths, cache keeps two
+        x = np.zeros((int(seconds * 44100), 2), np.float32)
+        sep.separate_stems(x)
+    assert len(sep.runners) == sep.MAX_RUNNERS
+    assert list(sep.runners) == [int(2.0 * 44100), int(2.5 * 44100)]  # most recent kept
+    sep.close()
+    assert sep.model is None and sep.runners == {}
+    # Weights, graphs, caches and cuBLAS workspaces all released (1 MB tolerance).
+    assert torch.cuda.memory_allocated() - base < 2**20

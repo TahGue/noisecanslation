@@ -40,10 +40,53 @@ class _TorchSeparator(SpeechSeparator):
             info["peak_vram_mb"] = round(self.torch.cuda.max_memory_allocated() / 2**20, 1)
         return info
 
-    def close(self) -> None:
-        self.model = None
-        if self.device.startswith("cuda"):
+    # CUDA graphs kept per live window length. Each holds static buffers (and for
+    # HTDemucs a model copy), so trying several presets must not grow VRAM forever.
+    MAX_RUNNERS = 2
+
+    def _cached_runner(self, frames: int, build):
+        """Runner for this window length; least recently used ones are released."""
+        runners = self.__dict__.setdefault("runners", {})
+        if frames in runners:
+            runners[frames] = runners.pop(frames)  # mark as most recently used
+            return runners[frames]
+        while len(runners) >= self.MAX_RUNNERS:
+            runners.pop(next(iter(runners)))
+            self.release_gpu()
+        runners[frames] = build()
+        return runners[frames]
+
+    def release_gpu(self) -> None:
+        """Return freed tensors to the driver, not just to PyTorch's cache."""
+        import gc
+
+        gc.collect()  # graphs and runners can sit in reference cycles
+        if str(self.device).startswith("cuda"):
+            self.torch.cuda.synchronize()
+            # cuBLAS keeps a workspace per stream (TIGER uses three extra streams);
+            # they count as allocated until cleared explicitly.
+            clear = getattr(self.torch._C, "_cuda_clearCublasWorkspaces", None)
+            if clear is not None:
+                clear()
             self.torch.cuda.empty_cache()
+
+    def close(self) -> None:
+        self.runners = {}
+        self.model = None
+        if not hasattr(self, "torch"):
+            return  # never initialised
+        # Drop every network this separator holds, whatever the attribute is called
+        # (HTDemucs keeps its inner model as `single` as well as the bag in `model`).
+        for name, value in list(self.__dict__.items()):
+            if isinstance(value, self.torch.nn.Module):
+                setattr(self, name, None)
+        # The fast paths cache STFT windows / position tables on the GPU per shape.
+        import sys
+
+        for module in ("voiceonly.separators.fast_demucs",):
+            if module in sys.modules:
+                sys.modules[module]._cache.clear()
+        self.release_gpu()
 
 
 class HTDemucs(_TorchSeparator):
@@ -84,15 +127,13 @@ class HTDemucs(_TorchSeparator):
 
     def _runner(self, frames: int):
         """CUDA-graph runner for one live window length (built on first use)."""
-        if frames not in self.runners:
-            import copy
+        import copy
 
-            from .fast_demucs import GraphRunner
+        from .fast_demucs import GraphRunner
 
-            # Own copy: the runner changes padding behaviour, which offline runs must not see.
-            model = copy.deepcopy(self.single)
-            self.runners[frames] = GraphRunner(model, frames, self.half)
-        return self.runners[frames]
+        # Own copy: the runner changes padding behaviour, which offline runs must not see.
+        return self._cached_runner(
+            frames, lambda: GraphRunner(copy.deepcopy(self.single), frames, self.half))
 
     def runtime_info(self) -> dict:
         info = super().runtime_info()
@@ -101,9 +142,6 @@ class HTDemucs(_TorchSeparator):
             info["live_cuda_graph"] = all(r.graph is not None for r in self.runners.values())
         return info
 
-    def close(self) -> None:
-        self.runners.clear()
-        super().close()
 
     def separate(self, chunk: np.ndarray) -> np.ndarray:
         return self._sources(chunk)[self.stem]
@@ -295,13 +333,10 @@ class RoFormerDirect(_TorchSeparator):
     LIVE_MAX_SECONDS = 4.0  # chunks up to this length use the CUDA-graph runner
 
     def _runner(self, frames: int):
-        if not hasattr(self, "runners"):
-            self.runners = {}
-        if frames not in self.runners:
-            from .fast_roformer import RoFormerGraphRunner
+        from .fast_roformer import RoFormerGraphRunner
 
-            self.runners[frames] = RoFormerGraphRunner(self.model, frames, self.half)
-        return self.runners[frames]
+        return self._cached_runner(
+            frames, lambda: RoFormerGraphRunner(self.model, frames, self.half))
 
     def runtime_info(self) -> dict:
         info = super().runtime_info()
@@ -310,9 +345,6 @@ class RoFormerDirect(_TorchSeparator):
             info["live_cuda_graph"] = all(r.graph is not None for r in runners.values())
         return info
 
-    def close(self) -> None:
-        self.runners = {}
-        super().close()
 
     def separate(self, chunk: np.ndarray) -> np.ndarray:
         torch = self.torch
@@ -408,16 +440,11 @@ class MRXCinematic(_TorchSeparator):
         self.runners: dict[int, object] = {}
 
     def _runner(self, frames: int):
-        if frames not in self.runners:
-            from .fast_mrx import MRXGraphRunner
+        from .fast_mrx import MRXGraphRunner
 
-            self.runners[frames] = MRXGraphRunner(self.model, frames, self.info.channels,
-                                                  self.half)
-        return self.runners[frames]
+        return self._cached_runner(
+            frames, lambda: MRXGraphRunner(self.model, frames, self.info.channels, self.half))
 
-    def close(self) -> None:
-        self.runners = {}
-        super().close()
 
     def separate_stems(self, chunk: np.ndarray) -> np.ndarray:
         torch = self.torch
@@ -480,15 +507,10 @@ class TigerCinematic(_TorchSeparator):
         self.model = model.to(self.device).eval()
 
     def _runner(self, frames: int):
-        if frames not in self.runners:
-            from .fast_tiger import TigerGraphRunner
+        from .fast_tiger import TigerGraphRunner
 
-            self.runners[frames] = TigerGraphRunner(self.model, frames, 1, self.half)
-        return self.runners[frames]
+        return self._cached_runner(frames, lambda: TigerGraphRunner(self.model, frames, 1, self.half))
 
-    def close(self) -> None:
-        self.runners = {}
-        super().close()
 
     def separate(self, chunk: np.ndarray) -> np.ndarray:
         return self.separate_stems(chunk)[0]
